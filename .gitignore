@@ -1,0 +1,57 @@
+# === Dependencies ===
+node_modules/
+
+# === Build output ===
+dist/
+build/
+*.js
+*.d.ts
+*.js.map
+!jest.config.js
+!eslint.config.js
+
+# === Environment & secrets ===
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+*.macaroon
+
+# === IDE ===
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+*.swp
+*.swo
+*~
+
+# === OS ===
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# === Logs ===
+*.log
+logs/
+
+# === Test & coverage ===
+coverage/
+.nyc_output/
+
+# === Documentation (internal planning, not shipped) ===
+/docs/
+
+# === Personal identity / credentials ===
+# Never commit LND credentials, macaroons, TLS certs
+*.macaroon
+tls.cert
+admin.macaroon
+
+# Never commit personal config that may contain real names/emails
+.npmrc
+.yarnrc
+.yarnrc.yml

@@ -30,6 +30,19 @@ export class PaymentError extends Error {
   }
 }
 
+function sanitiseLndBody(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    const SENSITIVE_FIELDS = ['payment_preimage', 'payment_hash', 'r_hash', 'r_preimage'];
+    for (const field of SENSITIVE_FIELDS) {
+      if (field in parsed) parsed[field] = '[REDACTED]';
+    }
+    return JSON.stringify(parsed).slice(0, 256);
+  } catch {
+    return body.slice(0, 256);
+  }
+}
+
 export class LightningService {
   private readonly baseUrl: URL;
   private readonly macaroonHex: string;
@@ -190,7 +203,7 @@ export class LightningService {
             res.statusCode >= 300
           ) {
             const errorCode = this.mapLndErrorCode(responseBody);
-            console.debug(`[LightningService] LND error response: ${responseBody.slice(0, 256)}`);
+            console.debug(`[LightningService] LND error response: ${sanitiseLndBody(responseBody)}`);
             reject(
               new PaymentError(
                 `LND request failed: HTTP ${res.statusCode ?? 'unknown'} (${errorCode})`,
@@ -203,7 +216,7 @@ export class LightningService {
           try {
             resolve(JSON.parse(responseBody) as T);
           } catch {
-            console.debug(`[LightningService] Unparseable LND response: ${responseBody.slice(0, 256)}`);
+            console.debug(`[LightningService] Unparseable LND response: ${sanitiseLndBody(responseBody)}`);
             reject(
               new PaymentError(
                 'Failed to parse LND response as JSON',

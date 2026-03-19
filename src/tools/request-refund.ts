@@ -9,19 +9,20 @@ import type { AskAHumanClient } from "../services/askahuman-client.js";
 import { AskAHumanError } from "../services/askahuman-client.js";
 import type { LightningService } from "../services/lightning-service.js";
 import { PaymentError } from "../services/lightning-service.js";
+import type { CredentialStore } from "../services/credential-store.js";
 import { VerificationStatus } from "../types.js";
 
 export function registerRequestRefund(
   server: McpServer,
   client: AskAHumanClient,
   lightning: LightningService,
+  credentialStore: CredentialStore,
 ): void {
   server.tool(
     "request_refund",
-    "Request a full refund for a paid verification task that expired without being claimed by a human verifier. Requires the original payment preimage as proof of payment.",
+    "Request a full refund for a paid verification task that expired without being claimed by a human verifier. The payment credential is held server-side -- no preimage needed.",
     {
       verificationId: z.string().uuid().describe("The ID of the expired verification request"),
-      preimage: z.string().regex(/^[0-9a-f]{64}$/i).describe("Hex-encoded Lightning payment preimage from the original payment (64 hex chars = 32 bytes)"),
     },
     async (args) => {
       // Confirm refund eligibility by checking current status
@@ -52,6 +53,17 @@ export function registerRequestRefund(
           content: [{ type: "text" as const, text: JSON.stringify({
             status: "REFUND_FAILED",
             failureReason: "REFUND_WINDOW_EXPIRED: refund window has passed",
+          }) }],
+        };
+      }
+
+      // Look up the preimage from the credential store (never exposed to the agent)
+      const preimage = credentialStore.get(args.verificationId);
+      if (!preimage) {
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({
+            status: "REFUND_FAILED",
+            failureReason: "CREDENTIAL_EXPIRED: payment credential not found in server memory. This may happen if the server was restarted since the original payment. Contact support with your verificationId.",
           }) }],
         };
       }
@@ -89,10 +101,11 @@ export function registerRequestRefund(
         const refundResult = await client.requestRefund(
           args.verificationId,
           invoice.bolt11,
-          args.preimage,
+          preimage,
         );
 
         if (refundResult.refunded) {
+          credentialStore.delete(args.verificationId);
           return {
             content: [{ type: "text" as const, text: JSON.stringify({
               status: "REFUNDED",

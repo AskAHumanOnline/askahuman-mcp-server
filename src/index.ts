@@ -13,6 +13,7 @@ import { loadConfig } from "./config.js";
 import { AskAHumanClient } from "./services/askahuman-client.js";
 import { LightningService } from "./services/lightning-service.js";
 import { L402Service } from "./services/l402-service.js";
+import { CredentialStore } from "./services/credential-store.js";
 import { registerAskHuman } from "./tools/ask-human.js";
 import { registerCheckVerification } from "./tools/check-verification.js";
 import { registerCancelVerification } from "./tools/cancel-verification.js";
@@ -25,16 +26,17 @@ async function main(): Promise<void> {
   const askahumanClient = new AskAHumanClient(config);
   const lightningService = new LightningService(config);
   const l402Service = new L402Service(askahumanClient, lightningService);
+  const credentialStore = new CredentialStore();
 
   const server = new McpServer({
     name: "askahuman-mcp",
     version: "0.1.0",
   });
 
-  registerAskHuman(server, config, l402Service, askahumanClient);
+  registerAskHuman(server, config, l402Service, askahumanClient, credentialStore);
   registerCheckVerification(server, askahumanClient);
   registerCancelVerification(server, askahumanClient);
-  registerRequestRefund(server, askahumanClient, lightningService);
+  registerRequestRefund(server, askahumanClient, lightningService, credentialStore);
   registerGetPricing(server, askahumanClient);
 
   // Register signal handlers before connecting so signals during connect are handled.

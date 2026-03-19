@@ -7,6 +7,7 @@ import { z } from "zod";
 import type { Config } from "../config.js";
 import type { L402Service } from "../services/l402-service.js";
 import type { AskAHumanClient } from "../services/askahuman-client.js";
+import type { CredentialStore } from "../services/credential-store.js";
 import { type CreateVerificationRequest, TaskType, VerificationStatus } from "../types.js";
 
 const POLL_START_MS = 1_000;
@@ -22,15 +23,16 @@ export function registerAskHuman(
   _config: Config,
   l402Service: L402Service,
   client: AskAHumanClient,
+  credentialStore: CredentialStore,
 ): void {
   server.tool(
     "ask_human",
     "Submit a question for human verification, pay via Lightning Network, and wait for the result. Returns the human's answer or an error with refund guidance if the task expires.",
     {
-      question: z.string().min(1).describe("The question or task for the human verifier"),
+      question: z.string().min(1).max(2000).describe("The question or task for the human verifier"),
       taskType: z.enum(["BINARY_DECISION", "MULTIPLE_CHOICE", "TEXT_RESPONSE"]).describe("Type of verification task"),
-      context: z.string().optional().describe("Additional context to help the verifier"),
-      choices: z.array(z.string()).optional().describe("Answer options for MULTIPLE_CHOICE tasks"),
+      context: z.string().max(4000).optional().describe("Additional context to help the verifier"),
+      choices: z.array(z.string().max(500)).max(20).optional().describe("Answer options for MULTIPLE_CHOICE tasks"),
       callbackUrl: z.string().url().optional().describe("Webhook URL for async result delivery"),
       urgent: z.boolean().optional().default(false).describe("Pay priority rate for faster handling"),
       maxBudgetSats: z.number().int().positive().optional().describe("Maximum sats willing to pay (server enforces minimum)"),
@@ -65,6 +67,7 @@ export function registerAskHuman(
         };
       }
 
+      credentialStore.set(credentials.verificationId, credentials.getPreimage());
       const verificationId = credentials.verificationId;
 
       // Submit the authenticated request
@@ -130,8 +133,7 @@ export function registerAskHuman(
                 verificationId,
                 refundEligible: verification.refundEligible ?? true,
                 refundDeadline: verification.refundDeadline,
-                preimage: credentials.getPreimage(),
-                message: "Task expired without being claimed by a verifier. Call request_refund with this verificationId and preimage to reclaim your sats.",
+                message: "Task expired without being claimed by a verifier. Call request_refund with this verificationId to reclaim your sats.",
               }) }],
             };
 

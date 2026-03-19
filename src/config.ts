@@ -31,11 +31,20 @@ function optionalEnv(name: string, defaultValue?: string): string | undefined {
 }
 
 export function loadConfig(): Config {
-  return {
+  const config: Config = {
     askahumanApiUrl: requireEnv('ASKAHUMAN_API_URL'),
     lndRestUrl: requireEnv('LND_REST_URL'),
     lndMacaroonHex: requireEnv('LND_MACAROON_HEX'),
     lndTlsCertPath: optionalEnv('LND_TLS_CERT_PATH'),
     logLevel: optionalEnv('LOG_LEVEL', 'info') ?? 'info',
   };
+
+  // WARNING-1: Warn if API URL does not use HTTPS
+  if (!config.askahumanApiUrl.startsWith('https://')) {
+    console.warn(
+      '[Config] WARNING: ASKAHUMAN_API_URL does not use https:// — API credentials will be sent in cleartext.',
+    );
+  }
+
+  return config;
 }

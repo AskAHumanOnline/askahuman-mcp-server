@@ -9,6 +9,12 @@ import * as fs from 'node:fs';
 import type { Config } from '../config.js';
 import type { LndPayInvoiceResponse, LndAddInvoiceResponse } from '../types.js';
 
+/** Maximum time (ms) to wait for an LND request. */
+const REQUEST_TIMEOUT_MS = 30_000;
+
+/** Maximum response body size (bytes) accepted from LND. */
+const RESPONSE_SIZE_LIMIT = 1 * 1024 * 1024; // 1 MB
+
 export type PaymentErrorCode =
   | 'PAYMENT_FAILED'
   | 'INSUFFICIENT_BALANCE'
@@ -77,8 +83,17 @@ export class LightningService {
       );
     }
 
+    // WARNING-7: Validate preimage is exactly 32 bytes
+    const preimageBytes = Buffer.from(response.payment_preimage, 'base64');
+    if (preimageBytes.length !== 32) {
+      throw new PaymentError(
+        `Malformed preimage: expected 32 bytes, got ${preimageBytes.length}`,
+        'PAYMENT_FAILED',
+      );
+    }
+
     return {
-      preimage: this.decodeBase64ToHex(response.payment_preimage),
+      preimage: preimageBytes.toString('hex'),
       paymentHash: this.decodeBase64ToHex(response.payment_hash),
     };
   }
@@ -148,7 +163,16 @@ export class LightningService {
       const transport = isHttps ? https : http;
       const req = transport.request(options, (res) => {
         const chunks: Buffer[] = [];
-        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        let totalSize = 0;
+
+        res.on('data', (chunk: Buffer) => {
+          totalSize += chunk.length;
+          if (totalSize > RESPONSE_SIZE_LIMIT) {
+            req.destroy(new Error('Response too large'));
+            return;
+          }
+          chunks.push(chunk);
+        });
         res.on('error', (streamError) => {
           reject(
             new PaymentError(
@@ -166,9 +190,10 @@ export class LightningService {
             res.statusCode >= 300
           ) {
             const errorCode = this.mapLndErrorCode(responseBody);
+            console.debug(`[LightningService] LND error response: ${responseBody.slice(0, 256)}`);
             reject(
               new PaymentError(
-                `LND request failed: HTTP ${res.statusCode ?? 'unknown'} — ${responseBody}`,
+                `LND request failed: HTTP ${res.statusCode ?? 'unknown'} (${errorCode})`,
                 errorCode,
               ),
             );
@@ -178,9 +203,10 @@ export class LightningService {
           try {
             resolve(JSON.parse(responseBody) as T);
           } catch {
+            console.debug(`[LightningService] Unparseable LND response: ${responseBody.slice(0, 256)}`);
             reject(
               new PaymentError(
-                `Failed to parse LND response: ${responseBody}`,
+                'Failed to parse LND response as JSON',
                 'PAYMENT_FAILED',
               ),
             );
@@ -189,12 +215,37 @@ export class LightningService {
       });
 
       req.on('error', (error) => {
+        // Handle timeout-specific errors
+        if (error.message.includes('timed out')) {
+          reject(
+            new PaymentError(
+              'LND request timed out',
+              'PAYMENT_FAILED',
+            ),
+          );
+          return;
+        }
+        // Handle response-too-large errors
+        if (error.message.includes('Response too large')) {
+          reject(
+            new PaymentError(
+              'LND response exceeded size limit',
+              'PAYMENT_FAILED',
+            ),
+          );
+          return;
+        }
         reject(
           new PaymentError(
             `LND connection error: ${error.message}`,
             'PAYMENT_FAILED',
           ),
         );
+      });
+
+      // BLOCKER-4: Request timeout
+      req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+        req.destroy(new Error('LND request timed out after 30s'));
       });
 
       if (requestBody) {

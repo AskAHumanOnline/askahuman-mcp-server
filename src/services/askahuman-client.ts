@@ -11,6 +11,15 @@ import type {
   VerificationResponse,
 } from '../types.js';
 
+/** Maximum time (ms) to wait for any single API request. */
+const REQUEST_TIMEOUT_MS = 30_000;
+
+/** Maximum acceptable length for macaroon or invoice values. */
+const MAX_CREDENTIAL_LENGTH = 8192;
+
+/** Regex for validating UUID format. */
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export type AskAHumanErrorCode =
   | 'PAYMENT_REQUIRED_UNEXPECTED'
   | 'API_ERROR'
@@ -19,7 +28,8 @@ export type AskAHumanErrorCode =
 export class AskAHumanError extends Error {
   public readonly code: AskAHumanErrorCode;
   public readonly status?: number;
-  public readonly body?: string;
+  // Keep body non-enumerable so JSON.stringify(err) doesn't leak it
+  private readonly _body?: string;
 
   constructor(
     message: string,
@@ -31,8 +41,19 @@ export class AskAHumanError extends Error {
     this.name = 'AskAHumanError';
     this.code = code;
     this.status = status;
-    this.body = body;
+    Object.defineProperty(this, '_body', { value: body, enumerable: false, writable: false });
   }
+
+  get body(): string | undefined { return this._body; }
+}
+
+/**
+ * Truncate a string to a maximum length, appending an ellipsis if truncated.
+ * Used to sanitise response bodies before including in debug logs.
+ */
+function sanitiseBody(raw: string, maxLength = 256): string {
+  if (raw.length <= maxLength) return raw;
+  return raw.slice(0, maxLength) + '...[truncated]';
 }
 
 /**
@@ -78,8 +99,9 @@ export class AskAHumanClient {
 
     if (!response.ok) {
       const body = await this.safeReadBody(response);
+      console.debug(`[AskAHumanClient] GET /api/verify/${id} failed: ${sanitiseBody(body)}`);
       throw new AskAHumanError(
-        `Failed to get verification ${id}: HTTP ${response.status}`,
+        `AskAHuman API error: HTTP ${response.status} (API_ERROR)`,
         'API_ERROR',
         response.status,
         body,
@@ -104,8 +126,9 @@ export class AskAHumanClient {
 
     if (response.status !== 402) {
       const body = await this.safeReadBody(response);
+      console.debug(`[AskAHumanClient] POST /api/verify unexpected status: ${sanitiseBody(body)}`);
       throw new AskAHumanError(
-        `Expected 402 Payment Required but got ${response.status}`,
+        `AskAHuman API error: HTTP ${response.status} (PAYMENT_REQUIRED_UNEXPECTED)`,
         'PAYMENT_REQUIRED_UNEXPECTED',
         response.status,
         body,
@@ -125,20 +148,52 @@ export class AskAHumanClient {
       | undefined;
 
     if (!credentials) {
+      const bodyStr = JSON.stringify(responseBody);
+      console.debug(`[AskAHumanClient] Failed to parse WWW-Authenticate: ${sanitiseBody(bodyStr)}`);
       throw new AskAHumanError(
-        `Could not parse L402 credentials from WWW-Authenticate header: "${wwwAuth}"`,
+        'AskAHuman API error: HTTP 402 (API_ERROR) — could not parse L402 credentials from WWW-Authenticate header',
         'API_ERROR',
         402,
-        JSON.stringify(responseBody),
+        bodyStr,
+      );
+    }
+
+    // WARNING-3: Validate credential lengths
+    if (credentials.macaroon.length > MAX_CREDENTIAL_LENGTH || credentials.invoice.length > MAX_CREDENTIAL_LENGTH) {
+      throw new AskAHumanError(
+        'Credential in WWW-Authenticate header exceeds maximum length',
+        'API_ERROR',
+        402,
       );
     }
 
     if (!verificationId) {
+      const bodyStr = JSON.stringify(responseBody);
+      console.debug(`[AskAHumanClient] Missing verificationId in 402 body: ${sanitiseBody(bodyStr)}`);
       throw new AskAHumanError(
-        'Missing verificationId in 402 response body',
+        'AskAHuman API error: HTTP 402 (API_ERROR) — missing verificationId in response body',
         'API_ERROR',
         402,
-        JSON.stringify(responseBody),
+        bodyStr,
+      );
+    }
+
+    // WARNING-2: Validate verificationId is a UUID
+    if (!UUID_REGEX.test(verificationId)) {
+      throw new AskAHumanError(
+        'Server returned invalid verificationId: expected UUID format',
+        'API_ERROR',
+        402,
+      );
+    }
+
+    // WARNING-4: Validate amountSats
+    const rawAmount = totalInvoiceSats ?? amountSats;
+    if (typeof rawAmount !== 'number' || !Number.isFinite(rawAmount) || rawAmount <= 0) {
+      throw new AskAHumanError(
+        'Server returned invalid amountSats in 402 response',
+        'API_ERROR',
+        402,
       );
     }
 
@@ -146,7 +201,7 @@ export class AskAHumanClient {
       verificationId,
       macaroon: credentials.macaroon,
       invoice: credentials.invoice,
-      amountSats: totalInvoiceSats ?? amountSats ?? 0,
+      amountSats: rawAmount,
     };
   }
 
@@ -170,8 +225,9 @@ export class AskAHumanClient {
 
     if (response.status === 402) {
       const body = await this.safeReadBody(response);
+      console.debug(`[AskAHumanClient] L402 submission returned 402: ${sanitiseBody(body)}`);
       throw new AskAHumanError(
-        'Server returned 402 despite L402 credentials — payment may not have been recognized',
+        'AskAHuman API error: HTTP 402 (PAYMENT_REQUIRED_UNEXPECTED) — payment may not have been recognized',
         'PAYMENT_REQUIRED_UNEXPECTED',
         402,
         body,
@@ -180,8 +236,9 @@ export class AskAHumanClient {
 
     if (!response.ok) {
       const body = await this.safeReadBody(response);
+      console.debug(`[AskAHumanClient] L402 submission failed: ${sanitiseBody(body)}`);
       throw new AskAHumanError(
-        `Verification submission failed: HTTP ${response.status}`,
+        `AskAHuman API error: HTTP ${response.status} (API_ERROR)`,
         'API_ERROR',
         response.status,
         body,
@@ -211,8 +268,9 @@ export class AskAHumanClient {
 
     if (!response.ok) {
       const body = await this.safeReadBody(response);
+      console.debug(`[AskAHumanClient] Refund failed: ${sanitiseBody(body)}`);
       throw new AskAHumanError(
-        `Refund request failed: HTTP ${response.status}`,
+        `AskAHuman API error: HTTP ${response.status} (API_ERROR)`,
         'API_ERROR',
         response.status,
         body,
@@ -230,8 +288,9 @@ export class AskAHumanClient {
 
     if (!response.ok) {
       const body = await this.safeReadBody(response);
+      console.debug(`[AskAHumanClient] GET /api/pricing failed: ${sanitiseBody(body)}`);
       throw new AskAHumanError(
-        `Failed to get pricing: HTTP ${response.status}`,
+        `AskAHuman API error: HTTP ${response.status} (API_ERROR)`,
         'API_ERROR',
         response.status,
         body,
@@ -242,7 +301,7 @@ export class AskAHumanClient {
   }
 
   /**
-   * Internal fetch wrapper that catches network errors and normalizes them.
+   * Internal fetch wrapper that catches network errors, applies timeout, and normalizes them.
    */
   private async fetch(
     path: string,
@@ -250,8 +309,24 @@ export class AskAHumanClient {
   ): Promise<Response> {
     const url = `${this.baseUrl}${path}`;
     try {
-      return await fetch(url, init);
+      return await fetch(url, {
+        ...init,
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
     } catch (error) {
+      // Handle timeout specifically
+      if (error instanceof DOMException && error.name === 'TimeoutError') {
+        throw new AskAHumanError(
+          'Request timed out',
+          'NETWORK_ERROR',
+        );
+      }
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new AskAHumanError(
+          'Request timed out',
+          'NETWORK_ERROR',
+        );
+      }
       const message =
         error instanceof Error ? error.message : String(error);
       throw new AskAHumanError(

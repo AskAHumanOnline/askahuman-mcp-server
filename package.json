@@ -1,0 +1,33 @@
+{
+  "name": "askahuman-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for human verification via AskAHuman",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "bin": {
+    "askahuman-mcp": "dist/index.js"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "jest --config jest.config.cjs",
+    "lint": "eslint 'src/**/*.ts'"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^20.0.0",
+    "jest": "^29.0.0",
+    "ts-jest": "^29.0.0",
+    "@types/jest": "^29.0.0",
+    "eslint": "^8.0.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0"
+  }
+}

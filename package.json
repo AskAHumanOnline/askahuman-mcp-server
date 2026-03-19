@@ -18,7 +18,8 @@
     "lint": "eslint 'src/**/*.ts'"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.27.1"
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "zod": "^3.22.0"
   },
   "devDependencies": {
     "typescript": "^5.4.0",

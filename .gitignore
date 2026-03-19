@@ -45,6 +45,10 @@ coverage/
 # === Documentation (internal planning, not shipped) ===
 /docs/
 
+# === Claude Code (local project context — never commit) ===
+CLAUDE.md
+.claude/
+
 # === Personal identity / credentials ===
 # Never commit LND credentials, macaroons, TLS certs
 *.macaroon

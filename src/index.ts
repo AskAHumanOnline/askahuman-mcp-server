@@ -41,6 +41,7 @@ async function main(): Promise<void> {
 
   // Register signal handlers before connecting so signals during connect are handled.
   const shutdown = async () => {
+    credentialStore.destroy();
     await server.close();
     process.exit(0);
   };

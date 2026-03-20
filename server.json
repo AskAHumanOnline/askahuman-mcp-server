@@ -1,0 +1,49 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/server.json",
+  "name": "io.github.AskAHumanOnline/askahuman-mcp",
+  "title": "AskAHuman MCP",
+  "description": "Let AI agents request human verification of any task. Submit a question, pay via the Lightning Network (L402), and get a verified human answer — all as a single tool call.",
+  "version": "0.1.1",
+  "websiteUrl": "https://github.com/AskAHumanOnline/askahuman-mcp-server",
+  "repository": {
+    "url": "https://github.com/AskAHumanOnline/askahuman-mcp-server",
+    "type": "git"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "askahuman-mcp",
+      "version": "0.1.1",
+      "runtimeArguments": [],
+      "environmentVariables": [
+        {
+          "name": "ASKAHUMAN_API_URL",
+          "description": "Base URL of the AskAHuman API",
+          "required": true,
+          "default": "https://api.askahuman.online"
+        },
+        {
+          "name": "LND_REST_URL",
+          "description": "URL of your LND node's REST API (e.g. https://localhost:8080)",
+          "required": true
+        },
+        {
+          "name": "LND_MACAROON_HEX",
+          "description": "Hex-encoded LND admin macaroon for authorising Lightning payments",
+          "required": true
+        },
+        {
+          "name": "LND_TLS_CERT_PATH",
+          "description": "Path to LND's TLS certificate file (required for self-signed certs)",
+          "required": false
+        },
+        {
+          "name": "LOG_LEVEL",
+          "description": "Log verbosity: debug, info, warn, error",
+          "required": false,
+          "default": "info"
+        }
+      ]
+    }
+  ]
+}

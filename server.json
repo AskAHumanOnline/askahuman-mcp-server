@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/server.json",
   "name": "io.github.AskAHumanOnline/askahuman-mcp",
   "title": "AskAHuman MCP",
-  "description": "Let AI agents request human verification of any task. Submit a question, pay via the Lightning Network (L402), and get a verified human answer — all as a single tool call.",
+  "description": "Human verification for AI agents. Ask a question, pay via Lightning (L402), get a verified answer.",
   "version": "0.1.1",
   "websiteUrl": "https://github.com/AskAHumanOnline/askahuman-mcp-server",
   "repository": {

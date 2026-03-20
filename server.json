@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/server.json",
-  "name": "io.github.AskAHumanOnline/askahuman-mcp",
+  "name": "io.github.askahumanonline/askahuman-mcp",
   "title": "AskAHuman MCP",
   "description": "Human verification for AI agents. Ask a question, pay via Lightning (L402), get a verified answer.",
   "version": "0.1.1",

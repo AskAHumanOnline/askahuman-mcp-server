@@ -1,7 +1,7 @@
 {
   "name": "askahuman-mcp",
   "mcpName": "io.github.AskAHumanOnline/askahuman-mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "MCP server for human verification via AskAHuman",
   "license": "MIT",
   "main": "dist/index.js",

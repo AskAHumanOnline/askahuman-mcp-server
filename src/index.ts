@@ -23,6 +23,8 @@ import { registerGetPricing } from "./tools/get-pricing.js";
 // Redirect console.debug and console.log to stderr.
 // stdout is reserved exclusively for the MCP stdio JSON protocol — any non-JSON
 // bytes written there corrupt the message stream and cause parse errors in the host.
+// console.warn and console.error are intentionally NOT patched: Node.js already
+// routes them to process.stderr natively, so no stdout risk exists for those.
 console.debug = (...args: unknown[]) =>
   process.stderr.write('[debug] ' + args.map(String).join(' ') + '\n');
 console.log = (...args: unknown[]) =>

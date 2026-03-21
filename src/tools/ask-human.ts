@@ -13,7 +13,7 @@ import { type CreateVerificationRequest, TaskType } from "../types.js";
 
 export function registerAskHuman(
   server: McpServer,
-  _config: Config,
+  config: Config,
   l402Service: L402Service,
   client: AskAHumanClient,
   credentialStore: CredentialStore,
@@ -28,7 +28,7 @@ export function registerAskHuman(
       choices: z.array(z.string().max(500)).max(20).optional().describe("Answer options for MULTIPLE_CHOICE tasks"),
       callbackUrl: z.string().url().optional().describe("Webhook URL for async result delivery"),
       urgent: z.boolean().optional().default(false).describe("Pay priority rate for faster handling"),
-      maxBudgetSats: z.number().int().positive().optional().describe("Maximum sats willing to pay (server enforces minimum)"),
+      maxBudgetSats: z.number().int().positive().optional().describe("Maximum sats willing to pay. The server enforces a minimum price per task type; if maxBudgetSats is below the minimum the call is rejected. If maxBudgetSats is above the minimum, your offered amount becomes the actual invoice — you will be charged the full maxBudgetSats, not just the server minimum."),
       maxWaitMinutes: z.number().int().min(30).max(1440).optional().default(240).describe("Max minutes before task expires in queue"),
     },
     async (args) => {
@@ -68,7 +68,7 @@ export function registerAskHuman(
 
       // Build the verification request
       const req: CreateVerificationRequest = {
-        agentId: "askahuman-mcp-agent",
+        agentId: config.agentId,
         taskType: args.taskType as TaskType,
         taskData: {
           question: args.question,

@@ -9,6 +9,7 @@ export interface Config {
   lndMacaroonHex: string;
   lndTlsCertPath?: string;
   logLevel: string;
+  agentId: string;
 }
 
 function requireEnv(name: string): string {
@@ -37,6 +38,9 @@ export function loadConfig(): Config {
     lndMacaroonHex: requireEnv('LND_MACAROON_HEX'),
     lndTlsCertPath: optionalEnv('LND_TLS_CERT_PATH'),
     logLevel: optionalEnv('LOG_LEVEL', 'info') ?? 'info',
+    // Optional: set a stable agent identity for attribution, rate limiting, and audit on the server.
+    // Defaults to "askahuman-mcp-agent" if not set — all MCP clients share the same bucket by default.
+    agentId: optionalEnv('ASKAHUMAN_AGENT_ID', 'askahuman-mcp-agent') ?? 'askahuman-mcp-agent',
   };
 
   // WARNING-1: Warn if API URL does not use HTTPS

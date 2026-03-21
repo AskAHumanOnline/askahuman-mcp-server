@@ -12,7 +12,7 @@ export function registerCheckVerification(
 ): void {
   server.tool(
     "check_verification",
-    "Check the status of a pending human verification request.",
+    "Check the status of a human verification request. Use this after ask_human to poll for the human's answer. Poll every 30-60 seconds until status is COMPLETED, which includes the human's answer in the result field.",
     {
       verificationId: z.string().uuid().describe("The verification request ID to check"),
     },

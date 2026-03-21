@@ -59,3 +59,10 @@ admin.macaroon
 .npmrc
 .yarnrc
 .yarnrc.yml
+
+# === MCP registry CLI session tokens (written by mcp-publisher) ===
+.mcpregistry_github_token
+.mcpregistry_registry_token
+
+# === Local MCP host config (machine-specific dev tooling) ===
+.mcp.json

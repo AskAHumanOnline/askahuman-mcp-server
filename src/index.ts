@@ -20,6 +20,14 @@ import { registerCancelVerification } from "./tools/cancel-verification.js";
 import { registerRequestRefund } from "./tools/request-refund.js";
 import { registerGetPricing } from "./tools/get-pricing.js";
 
+// Redirect console.debug and console.log to stderr.
+// stdout is reserved exclusively for the MCP stdio JSON protocol — any non-JSON
+// bytes written there corrupt the message stream and cause parse errors in the host.
+console.debug = (...args: unknown[]) =>
+  process.stderr.write('[debug] ' + args.map(String).join(' ') + '\n');
+console.log = (...args: unknown[]) =>
+  process.stderr.write('[log] ' + args.map(String).join(' ') + '\n');
+
 async function main(): Promise<void> {
   const config = loadConfig(); // throws on missing env vars -- fail fast
 

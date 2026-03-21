@@ -1,5 +1,6 @@
 /**
- * ask_human tool: submit a verification request, pay via Lightning, poll for result.
+ * ask_human tool: submit a verification request, pay via Lightning, and return immediately.
+ * The caller must poll check_verification to retrieve the human's answer.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -8,15 +9,7 @@ import type { Config } from "../config.js";
 import type { L402Service } from "../services/l402-service.js";
 import type { AskAHumanClient } from "../services/askahuman-client.js";
 import type { CredentialStore } from "../services/credential-store.js";
-import { type CreateVerificationRequest, TaskType, VerificationStatus } from "../types.js";
-
-const POLL_START_MS = 1_000;
-const POLL_MAX_MS = 30_000;
-const DEFAULT_MAX_POLL_MS = 10 * 60 * 1_000; // 10 minutes
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+import { type CreateVerificationRequest, TaskType } from "../types.js";
 
 export function registerAskHuman(
   server: McpServer,
@@ -27,7 +20,7 @@ export function registerAskHuman(
 ): void {
   server.tool(
     "ask_human",
-    "Submit a question for human verification, pay via Lightning Network, and wait for the result. Returns the human's answer or an error with refund guidance if the task expires.",
+    "Submit a question for human verification and pay via Lightning Network. Returns immediately with a verificationId after payment succeeds. You must then poll check_verification with the returned verificationId to retrieve the human's answer.",
     {
       question: z.string().min(1).max(2000).describe("The question or task for the human verifier"),
       taskType: z.enum(["BINARY_DECISION", "MULTIPLE_CHOICE", "TEXT_RESPONSE"]).describe("Type of verification task"),
@@ -39,6 +32,40 @@ export function registerAskHuman(
       maxWaitMinutes: z.number().int().min(30).max(1440).optional().default(240).describe("Max minutes before task expires in queue"),
     },
     async (args) => {
+      // Pre-fetch server pricing to determine amountSats (required by backend)
+      let amountSats: number;
+      try {
+        const pricing = await client.getPricing();
+        const taskPricing = pricing.taskTypes.find((p) => p.id === args.taskType);
+        if (!taskPricing) {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({
+              error: "UNKNOWN_TASK_TYPE",
+              message: `Server does not support task type: ${args.taskType}`,
+            }) }],
+          };
+        }
+        const serverPrice = args.urgent ? taskPricing.urgentPriceSats : taskPricing.basePriceSats;
+        if (args.maxBudgetSats !== undefined && args.maxBudgetSats < serverPrice) {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({
+              error: "BUDGET_EXCEEDED",
+              message: `Server requires ${serverPrice} sats for ${args.taskType} but maxBudgetSats is ${args.maxBudgetSats}. Increase your budget or omit maxBudgetSats to pay the server price.`,
+            }) }],
+          };
+        }
+        // Use maxBudgetSats as the offer if higher than server price (agent can pay more, never less)
+        amountSats = args.maxBudgetSats ?? serverPrice;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({
+            error: "PRICING_FAILED",
+            message: `Failed to fetch server pricing: ${message}`,
+          }) }],
+        };
+      }
+
       // Build the verification request
       const req: CreateVerificationRequest = {
         agentId: "askahuman-mcp-agent",
@@ -48,6 +75,7 @@ export function registerAskHuman(
           ...(args.context && { context: args.context }),
           ...(args.choices && { choices: args.choices }),
         },
+        amountSats,
         ...(args.maxBudgetSats !== undefined && { maxBudgetSats: args.maxBudgetSats }),
         ...(args.maxWaitMinutes !== undefined && { maxWaitMinutes: args.maxWaitMinutes }),
         ...(args.callbackUrl !== undefined && { callbackUrl: args.callbackUrl }),
@@ -88,86 +116,17 @@ export function registerAskHuman(
         };
       }
 
-      // Poll for result with exponential backoff
-      let intervalMs = POLL_START_MS;
-      const startTime = Date.now();
-      const maxPollMs = DEFAULT_MAX_POLL_MS;
-
-      while (true) {
-        await sleep(intervalMs);
-        intervalMs = Math.min(intervalMs * 2, POLL_MAX_MS);
-
-        let verification;
-        try {
-          verification = await client.getVerification(verificationId);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          // Transient poll failure -- keep trying until timeout
-          if (Date.now() - startTime > maxPollMs) {
-            return {
-              content: [{ type: "text" as const, text: JSON.stringify({
-                error: "TIMEOUT",
-                verificationId,
-                message: `Polling failed and timeout elapsed: ${message}. Use check_verification to monitor.`,
-              }) }],
-            };
-          }
-          continue;
-        }
-
-        switch (verification.status) {
-          case VerificationStatus.COMPLETED:
-            return {
-              content: [{ type: "text" as const, text: JSON.stringify({
-                verificationId,
-                status: "COMPLETED",
-                result: verification.result,
-                invoiceAmountSats: verification.totalInvoiceSats ?? verification.amountSats,
-              }) }],
-            };
-
-          case VerificationStatus.EXPIRED_UNCLAIMED:
-            return {
-              content: [{ type: "text" as const, text: JSON.stringify({
-                error: "EXPIRED_UNCLAIMED",
-                verificationId,
-                refundEligible: verification.refundEligible ?? true,
-                refundDeadline: verification.refundDeadline,
-                message: "Task expired without being claimed by a verifier. Call request_refund with this verificationId to reclaim your sats.",
-              }) }],
-            };
-
-          case VerificationStatus.EXPIRED:
-            return {
-              content: [{ type: "text" as const, text: JSON.stringify({
-                error: "EXPIRED",
-                verificationId,
-                message: "Verification invoice expired before payment was confirmed.",
-              }) }],
-            };
-
-          case VerificationStatus.REFUNDED:
-            return {
-              content: [{ type: "text" as const, text: JSON.stringify({
-                error: "ALREADY_REFUNDED",
-                verificationId,
-                message: "This verification has already been refunded.",
-              }) }],
-            };
-        }
-
-        // Check agent-side timeout
-        if (Date.now() - startTime > maxPollMs) {
-          return {
-            content: [{ type: "text" as const, text: JSON.stringify({
-              error: "TIMEOUT",
-              verificationId,
-              status: verification.status,
-              message: "Polling timeout elapsed. The task is still live. Call check_verification to monitor it or cancel_verification to check refund eligibility.",
-            }) }],
-          };
-        }
-      }
+      // Return immediately -- the task is queued for human verification
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({
+          status: "PENDING",
+          verificationId,
+          taskType: args.taskType,
+          amountPaidSats: amountSats,
+          message: "Task queued for human verification. Call check_verification with verificationId to poll for the result.",
+          instructions: "Poll check_verification every 30-60 seconds until status is COMPLETED. The result will contain the human's answer.",
+        }) }],
+      };
     },
   );
 }

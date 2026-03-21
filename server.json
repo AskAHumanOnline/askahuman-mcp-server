@@ -1,13 +1,13 @@
 {
-  "$schema": "https://static.modelcontextprotocol.io/schemas/server.json",
-  "name": "io.github.askahumanonline/askahuman-mcp",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.AskAHumanOnline/askahuman-mcp",
   "title": "AskAHuman MCP",
   "description": "Human verification for AI agents. Ask a question, pay via Lightning (L402), get a verified answer.",
   "version": "0.1.1",
   "websiteUrl": "https://github.com/AskAHumanOnline/askahuman-mcp-server",
   "repository": {
     "url": "https://github.com/AskAHumanOnline/askahuman-mcp-server",
-    "type": "git"
+    "source": "github"
   },
   "packages": [
     {
@@ -15,6 +15,9 @@
       "identifier": "askahuman-mcp",
       "version": "0.1.1",
       "runtimeArguments": [],
+      "transport": {
+        "type": "stdio"
+      },
       "environmentVariables": [
         {
           "name": "ASKAHUMAN_API_URL",

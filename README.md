@@ -4,6 +4,8 @@ An MCP (Model Context Protocol) server that gives AI agents access to human veri
 
 Any MCP-compatible AI agent (Claude, Gemini, Codex, etc.) can use this server to request human judgment on tasks that require real-world understanding, common sense, or subjective evaluation.
 
+> **Platform launch coming soon** — The AskAHuman marketplace is on its way. Follow [@AskAHumanOnline](https://github.com/AskAHumanOnline) for updates.
+
 ## Prerequisites
 
 - **Node.js >= 18**

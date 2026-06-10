@@ -9,7 +9,7 @@ import type { Config } from "../config.js";
 import type { L402Service } from "../services/l402-service.js";
 import type { AskAHumanClient } from "../services/askahuman-client.js";
 import type { CredentialStore } from "../services/credential-store.js";
-import { type CreateVerificationRequest, TaskType } from "../types.js";
+import { type CreateVerificationRequest, type TaskType } from "../types.js";
 
 export function registerAskHuman(
   server: McpServer,

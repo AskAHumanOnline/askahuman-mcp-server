@@ -16,6 +16,7 @@ const TEST_CONFIG: Config = {
   lndRestUrl: 'https://localhost:8080',
   lndMacaroonHex: 'deadbeef',
   logLevel: 'info',
+  agentId: 'test-agent',
 };
 
 function createMocks() {
@@ -26,6 +27,7 @@ function createMocks() {
   const client = {
     submitVerificationWithL402: jest.fn(),
     getVerification: jest.fn(),
+    getPricing: jest.fn(),
   } as unknown as jest.Mocked<AskAHumanClient>;
 
   const credentialStore = {
@@ -63,6 +65,19 @@ describe('ask_human tool', () => {
   beforeEach(() => {
     jest.useFakeTimers();
     mocks = createMocks();
+    (mocks.client.getPricing as jest.Mock).mockResolvedValue({
+      taskTypes: [
+        {
+          id: 'BINARY_DECISION',
+          displayName: 'Binary Decision',
+          description: 'Yes/no question',
+          basePriceSats: 50,
+          urgentPriceSats: 100,
+          tierPricing: {},
+        },
+      ],
+      urgentMultiplier: 2.0,
+    });
     handler = setupTool(mocks);
   });
 

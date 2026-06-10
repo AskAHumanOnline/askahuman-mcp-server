@@ -22,6 +22,7 @@ function createTestConfig(port: number): Config {
     lndRestUrl: `http://127.0.0.1:${port}`,
     lndMacaroonHex: 'deadbeefcafe',
     logLevel: 'info',
+    agentId: 'test-agent',
   };
 }
 
@@ -361,6 +362,7 @@ describe('LightningService', () => {
           lndMacaroonHex: 'deadbeefcafe',
           lndTlsCertPath: certPath,
           logLevel: 'info',
+          agentId: 'test-agent',
         };
 
         // Should not throw — successfully reads cert and creates agent
@@ -377,6 +379,7 @@ describe('LightningService', () => {
         lndRestUrl: 'https://127.0.0.1:8080',
         lndMacaroonHex: 'deadbeefcafe',
         logLevel: 'info',
+        agentId: 'test-agent',
       };
 
       // Should not throw
@@ -435,6 +438,7 @@ describe('LightningService', () => {
         lndMacaroonHex: 'deadbeefcafe',
         lndTlsCertPath: certPath,
         logLevel: 'info',
+        agentId: 'test-agent',
       };
 
       const service = new LightningService(config);

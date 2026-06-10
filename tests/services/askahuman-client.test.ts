@@ -12,6 +12,7 @@ const TEST_CONFIG: Config = {
   lndRestUrl: 'https://localhost:8080',
   lndMacaroonHex: 'deadbeef',
   logLevel: 'info',
+  agentId: 'test-agent',
 };
 
 function mockResponse(

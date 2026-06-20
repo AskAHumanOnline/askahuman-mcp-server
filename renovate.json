@@ -24,8 +24,8 @@
     {
       "description": "Group MCP SDK packages",
       "groupName": "MCP SDK",
-      "matchPackagePrefixes": [
-        "@modelcontextprotocol"
+      "matchPackageNames": [
+        "@modelcontextprotocol{/,}**"
       ]
     },
     {
@@ -41,10 +41,10 @@
     {
       "description": "Group lint/format tooling",
       "groupName": "Lint and format",
-      "matchPackagePrefixes": [
-        "eslint",
-        "@typescript-eslint",
-        "prettier"
+      "matchPackageNames": [
+        "eslint{/,}**",
+        "@typescript-eslint{/,}**",
+        "prettier{/,}**"
       ]
     }
   ],

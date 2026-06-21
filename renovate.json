@@ -50,8 +50,6 @@
   ],
 
   "prConcurrentLimit": 5,
-  "prCreation": "not-pending",
-  "prNotPendingHours": 2,
 
   "vulnerabilityAlerts": {
     "enabled": true,

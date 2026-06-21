@@ -3,7 +3,7 @@
   "name": "io.github.AskAHumanOnline/askahuman-mcp",
   "title": "AskAHuman MCP",
   "description": "Human verification for AI agents. Ask a question, pay via Lightning (L402), get a verified answer.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "websiteUrl": "https://github.com/AskAHumanOnline/askahuman-mcp-server",
   "repository": {
     "url": "https://github.com/AskAHumanOnline/askahuman-mcp-server",
@@ -13,7 +13,7 @@
     {
       "registryType": "npm",
       "identifier": "askahuman-mcp",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "runtimeArguments": [],
       "transport": {
         "type": "stdio"

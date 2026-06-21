@@ -66,6 +66,65 @@ describe('check_verification tool', () => {
 
     expect(parsed.status).toBe('COMPLETED');
     expect(parsed.result).toEqual({ answer: 'yes', confidence: 0.9 });
+    expect(parsed.terminal).toBe(true);
+    expect(parsed.nextStep).toBe('done');
+  });
+
+  it('signals keep_polling for non-terminal statuses', async () => {
+    for (const status of [
+      VerificationStatus.PENDING_PAYMENT,
+      VerificationStatus.PAYMENT_RECEIVED,
+      VerificationStatus.IN_QUEUE,
+      VerificationStatus.ASSIGNED,
+      VerificationStatus.ESCALATED,
+    ]) {
+      client.getVerification.mockResolvedValue({
+        verificationId: 'vid-123',
+        status,
+        createdAt: '2026-01-01T00:00:00Z',
+      });
+
+      const result = await handler({ verificationId: 'vid-123' });
+      const parsed = parseToolResult(result) as Record<string, unknown>;
+
+      expect(parsed.status).toBe(status);
+      expect(parsed.terminal).toBe(false);
+      expect(parsed.nextStep).toBe('keep_polling');
+    }
+  });
+
+  it('directs to request_refund and stops polling when EXPIRED_UNCLAIMED', async () => {
+    client.getVerification.mockResolvedValue({
+      verificationId: 'vid-123',
+      status: VerificationStatus.EXPIRED_UNCLAIMED,
+      createdAt: '2026-01-01T00:00:00Z',
+      refundEligible: true,
+    });
+
+    const result = await handler({ verificationId: 'vid-123' });
+    const parsed = parseToolResult(result) as Record<string, unknown>;
+
+    expect(parsed.terminal).toBe(true);
+    expect(parsed.nextStep).toBe('call_request_refund');
+    expect(parsed.refundEligible).toBe(true);
+  });
+
+  it.each([
+    [VerificationStatus.CANCELLED, 'cancelled'],
+    [VerificationStatus.EXPIRED, 'expired_unpaid'],
+    [VerificationStatus.REFUNDED, 'already_refunded'],
+  ])('marks %s terminal so the agent stops polling', async (status, nextStep) => {
+    client.getVerification.mockResolvedValue({
+      verificationId: 'vid-123',
+      status,
+      createdAt: '2026-01-01T00:00:00Z',
+    });
+
+    const result = await handler({ verificationId: 'vid-123' });
+    const parsed = parseToolResult(result) as Record<string, unknown>;
+
+    expect(parsed.terminal).toBe(true);
+    expect(parsed.nextStep).toBe(nextStep);
   });
 
   it('omits optional fields when not present', async () => {

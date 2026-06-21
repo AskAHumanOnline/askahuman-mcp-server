@@ -17,6 +17,7 @@ export enum TaskType {
   BINARY_DECISION = 'BINARY_DECISION',
   MULTIPLE_CHOICE = 'MULTIPLE_CHOICE',
   TEXT_RESPONSE = 'TEXT_RESPONSE',
+  MEDIA_VERIFICATION = 'MEDIA_VERIFICATION',
 }
 
 export interface VerificationResult {
@@ -65,6 +66,7 @@ export interface CreateVerificationRequest {
     question: string;
     context?: string;
     choices?: string[];
+    images?: string[];
   };
   amountSats?: number;
   callbackUrl?: string;

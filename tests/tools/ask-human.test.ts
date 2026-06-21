@@ -1,5 +1,10 @@
 /**
  * Unit tests for the ask_human tool.
+ *
+ * ask_human is fire-and-return: it prices, pays via L402, submits the request,
+ * then returns immediately with status PENDING and a verificationId. Polling for
+ * the human's answer is the job of the separate check_verification tool, so the
+ * status-mapping / refund cases live in check-verification.test.ts, not here.
  */
 
 import { registerAskHuman } from '../../src/tools/ask-human.js';
@@ -8,7 +13,6 @@ import type { AskAHumanClient } from '../../src/services/askahuman-client.js';
 import type { CredentialStore } from '../../src/services/credential-store.js';
 import type { Config } from '../../src/config.js';
 import { VerificationStatus } from '../../src/types.js';
-import type { VerificationResponse } from '../../src/types.js';
 import { createMockServer, parseToolResult, type ToolHandler } from './test-helpers.js';
 
 const TEST_CONFIG: Config = {
@@ -58,12 +62,22 @@ const BASE_ARGS = {
   maxWaitMinutes: 240,
 };
 
+/** Wire up authenticate + submit so the handler reaches its PENDING return. */
+function mockPaidSubmission(mocks: ReturnType<typeof createMocks>, preimage = 'preimage-hex') {
+  const creds = new L402Credentials('mac', preimage, 'vid-123');
+  (mocks.l402Service.authenticate as jest.Mock).mockResolvedValue(creds);
+  (mocks.client.submitVerificationWithL402 as jest.Mock).mockResolvedValue({
+    verificationId: 'vid-123',
+    status: VerificationStatus.PAYMENT_RECEIVED,
+    createdAt: '2026-01-01T00:00:00Z',
+  });
+}
+
 describe('ask_human tool', () => {
   let mocks: ReturnType<typeof createMocks>;
   let handler: ToolHandler;
 
   beforeEach(() => {
-    jest.useFakeTimers();
     mocks = createMocks();
     (mocks.client.getPricing as jest.Mock).mockResolvedValue({
       taskTypes: [
@@ -81,105 +95,73 @@ describe('ask_human tool', () => {
     handler = setupTool(mocks);
   });
 
-  afterEach(() => {
-    jest.useRealTimers();
-  });
+  it('happy path: prices -> pays -> submits -> returns PENDING', async () => {
+    mockPaidSubmission(mocks);
 
-  it('happy path: authenticate -> submit -> poll -> COMPLETED', async () => {
-    const creds = new L402Credentials('mac', 'preimage-hex', 'vid-123');
-
-    (mocks.l402Service.authenticate as jest.Mock).mockResolvedValue(creds);
-    (mocks.client.submitVerificationWithL402 as jest.Mock).mockResolvedValue({
-      verificationId: 'vid-123',
-      status: VerificationStatus.PAYMENT_RECEIVED,
-      createdAt: '2026-01-01T00:00:00Z',
-    });
-
-    // First poll returns COMPLETED
-    (mocks.client.getVerification as jest.Mock).mockResolvedValue({
-      verificationId: 'vid-123',
-      status: VerificationStatus.COMPLETED,
-      result: { answer: 'yes', confidence: 0.95 },
-      createdAt: '2026-01-01T00:00:00Z',
-      totalInvoiceSats: 50,
-    } satisfies VerificationResponse);
-
-    // Run the handler and advance timers for sleep
-    const resultPromise = handler(BASE_ARGS);
-    // Advance past the first sleep (1s)
-    await jest.advanceTimersByTimeAsync(2000);
-
-    const result = await resultPromise;
+    const result = await handler(BASE_ARGS);
     const parsed = parseToolResult(result) as Record<string, unknown>;
 
-    expect(parsed.status).toBe('COMPLETED');
+    expect(parsed.status).toBe('PENDING');
     expect(parsed.verificationId).toBe('vid-123');
-    expect(parsed.result).toEqual({ answer: 'yes', confidence: 0.95 });
-    expect(parsed.invoiceAmountSats).toBe(50);
+    expect(parsed.taskType).toBe('BINARY_DECISION');
+    expect(parsed.amountPaidSats).toBe(50);
 
-    // Verify credential was stored
+    // Credential (preimage) cached for later check_verification / refund
     expect(mocks.credentialStore.set).toHaveBeenCalledWith('vid-123', 'preimage-hex');
   });
 
-  it('returns EXPIRED_UNCLAIMED during poll without preimage in output', async () => {
-    const creds = new L402Credentials('mac', 'secret-preimage', 'vid-123');
-
-    (mocks.l402Service.authenticate as jest.Mock).mockResolvedValue(creds);
-    (mocks.client.submitVerificationWithL402 as jest.Mock).mockResolvedValue({
-      verificationId: 'vid-123',
-      status: VerificationStatus.PAYMENT_RECEIVED,
-      createdAt: '2026-01-01T00:00:00Z',
+  it('returns UNKNOWN_TASK_TYPE when the server does not price the task type', async () => {
+    (mocks.client.getPricing as jest.Mock).mockResolvedValue({
+      taskTypes: [],
+      urgentMultiplier: 2.0,
     });
 
-    (mocks.client.getVerification as jest.Mock).mockResolvedValue({
-      verificationId: 'vid-123',
-      status: VerificationStatus.EXPIRED_UNCLAIMED,
-      createdAt: '2026-01-01T00:00:00Z',
-      refundEligible: true,
-      refundDeadline: '2026-01-08T00:00:00Z',
-    });
-
-    const resultPromise = handler(BASE_ARGS);
-    await jest.advanceTimersByTimeAsync(2000);
-    const result = await resultPromise;
+    const result = await handler(BASE_ARGS);
     const parsed = parseToolResult(result) as Record<string, unknown>;
 
-    expect(parsed.error).toBe('EXPIRED_UNCLAIMED');
-    expect(parsed.refundEligible).toBe(true);
-    expect(parsed.refundDeadline).toBe('2026-01-08T00:00:00Z');
-    // Preimage must NOT appear in output
-    const fullText = result.content[0].text;
-    expect(fullText).not.toContain('secret-preimage');
+    expect(parsed.error).toBe('UNKNOWN_TASK_TYPE');
+    expect(mocks.l402Service.authenticate).not.toHaveBeenCalled();
   });
 
-  it('returns TIMEOUT when max poll duration exceeded (task still IN_QUEUE)', async () => {
-    const creds = new L402Credentials('mac', 'pre', 'vid-123');
-
-    (mocks.l402Service.authenticate as jest.Mock).mockResolvedValue(creds);
-    (mocks.client.submitVerificationWithL402 as jest.Mock).mockResolvedValue({
-      verificationId: 'vid-123',
-      status: VerificationStatus.PAYMENT_RECEIVED,
-      createdAt: '2026-01-01T00:00:00Z',
-    });
-
-    // Always return IN_QUEUE
-    (mocks.client.getVerification as jest.Mock).mockResolvedValue({
-      verificationId: 'vid-123',
-      status: VerificationStatus.IN_QUEUE,
-      createdAt: '2026-01-01T00:00:00Z',
-    });
-
-    const resultPromise = handler(BASE_ARGS);
-
-    // Advance past the 10-minute default max poll time
-    await jest.advanceTimersByTimeAsync(11 * 60 * 1000);
-
-    const result = await resultPromise;
+  it('returns BUDGET_EXCEEDED when maxBudgetSats is below the server price', async () => {
+    const result = await handler({ ...BASE_ARGS, maxBudgetSats: 10 });
     const parsed = parseToolResult(result) as Record<string, unknown>;
 
-    expect(parsed.error).toBe('TIMEOUT');
-    expect(parsed.verificationId).toBe('vid-123');
-    expect(parsed.status).toBe('IN_QUEUE');
+    expect(parsed.error).toBe('BUDGET_EXCEEDED');
+    expect(parsed.message).toContain('50');
+    expect(mocks.l402Service.authenticate).not.toHaveBeenCalled();
+  });
+
+  it('uses maxBudgetSats as the offer when above the server price', async () => {
+    mockPaidSubmission(mocks);
+
+    const result = await handler({ ...BASE_ARGS, maxBudgetSats: 120 });
+    const parsed = parseToolResult(result) as Record<string, unknown>;
+
+    expect(parsed.amountPaidSats).toBe(120);
+    const authCall = (mocks.l402Service.authenticate as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    expect(authCall.amountSats).toBe(120);
+    expect(authCall.maxBudgetSats).toBe(120);
+  });
+
+  it('charges the urgent price when urgent is set', async () => {
+    mockPaidSubmission(mocks);
+
+    const result = await handler({ ...BASE_ARGS, urgent: true });
+    const parsed = parseToolResult(result) as Record<string, unknown>;
+
+    expect(parsed.amountPaidSats).toBe(100);
+  });
+
+  it('returns PRICING_FAILED when pricing lookup throws', async () => {
+    (mocks.client.getPricing as jest.Mock).mockRejectedValue(new Error('pricing down'));
+
+    const result = await handler(BASE_ARGS);
+    const parsed = parseToolResult(result) as Record<string, unknown>;
+
+    expect(parsed.error).toBe('PRICING_FAILED');
+    expect(parsed.message).toContain('pricing down');
+    expect(mocks.l402Service.authenticate).not.toHaveBeenCalled();
   });
 
   it('returns PAYMENT_FAILED when authentication fails', async () => {
@@ -210,110 +192,20 @@ describe('ask_human tool', () => {
     expect(parsed.message).toContain('server error');
   });
 
-  it('returns EXPIRED for invoice-expired status during poll', async () => {
-    const creds = new L402Credentials('mac', 'pre', 'vid-123');
+  it('includes optional fields in the request when provided', async () => {
+    mockPaidSubmission(mocks);
 
-    (mocks.l402Service.authenticate as jest.Mock).mockResolvedValue(creds);
-    (mocks.client.submitVerificationWithL402 as jest.Mock).mockResolvedValue({
-      verificationId: 'vid-123',
-      status: VerificationStatus.PAYMENT_RECEIVED,
-      createdAt: '2026-01-01T00:00:00Z',
-    });
-
-    (mocks.client.getVerification as jest.Mock).mockResolvedValue({
-      verificationId: 'vid-123',
-      status: VerificationStatus.EXPIRED,
-      createdAt: '2026-01-01T00:00:00Z',
-    });
-
-    const resultPromise = handler(BASE_ARGS);
-    await jest.advanceTimersByTimeAsync(2000);
-    const result = await resultPromise;
-    const parsed = parseToolResult(result) as Record<string, unknown>;
-
-    expect(parsed.error).toBe('EXPIRED');
-  });
-
-  it('returns ALREADY_REFUNDED for REFUNDED status during poll', async () => {
-    const creds = new L402Credentials('mac', 'pre', 'vid-123');
-
-    (mocks.l402Service.authenticate as jest.Mock).mockResolvedValue(creds);
-    (mocks.client.submitVerificationWithL402 as jest.Mock).mockResolvedValue({
-      verificationId: 'vid-123',
-      status: VerificationStatus.PAYMENT_RECEIVED,
-      createdAt: '2026-01-01T00:00:00Z',
-    });
-
-    (mocks.client.getVerification as jest.Mock).mockResolvedValue({
-      verificationId: 'vid-123',
-      status: VerificationStatus.REFUNDED,
-      createdAt: '2026-01-01T00:00:00Z',
-    });
-
-    const resultPromise = handler(BASE_ARGS);
-    await jest.advanceTimersByTimeAsync(2000);
-    const result = await resultPromise;
-    const parsed = parseToolResult(result) as Record<string, unknown>;
-
-    expect(parsed.error).toBe('ALREADY_REFUNDED');
-  });
-
-  it('continues polling on transient errors until timeout', async () => {
-    const creds = new L402Credentials('mac', 'pre', 'vid-123');
-
-    (mocks.l402Service.authenticate as jest.Mock).mockResolvedValue(creds);
-    (mocks.client.submitVerificationWithL402 as jest.Mock).mockResolvedValue({
-      verificationId: 'vid-123',
-      status: VerificationStatus.PAYMENT_RECEIVED,
-      createdAt: '2026-01-01T00:00:00Z',
-    });
-
-    // Always throw on getVerification (transient failure)
-    (mocks.client.getVerification as jest.Mock).mockRejectedValue(
-      new Error('network timeout'),
-    );
-
-    const resultPromise = handler(BASE_ARGS);
-    // Advance past the 10-minute timeout
-    await jest.advanceTimersByTimeAsync(11 * 60 * 1000);
-    const result = await resultPromise;
-    const parsed = parseToolResult(result) as Record<string, unknown>;
-
-    expect(parsed.error).toBe('TIMEOUT');
-    expect(parsed.message).toContain('network timeout');
-  });
-
-  it('includes optional fields in request when provided', async () => {
-    const creds = new L402Credentials('mac', 'pre', 'vid-123');
-
-    (mocks.l402Service.authenticate as jest.Mock).mockResolvedValue(creds);
-    (mocks.client.submitVerificationWithL402 as jest.Mock).mockResolvedValue({
-      verificationId: 'vid-123',
-      status: VerificationStatus.PAYMENT_RECEIVED,
-      createdAt: '2026-01-01T00:00:00Z',
-    });
-
-    (mocks.client.getVerification as jest.Mock).mockResolvedValue({
-      verificationId: 'vid-123',
-      status: VerificationStatus.COMPLETED,
-      result: { answer: 'yes' },
-      createdAt: '2026-01-01T00:00:00Z',
-      amountSats: 25,
-    });
-
-    const argsWithOptionals = {
-      ...BASE_ARGS,
+    const result = await handler({
+      ...BASE_ARGS, // BINARY_DECISION (priced in beforeEach)
       context: 'some context',
       choices: ['a', 'b'],
       callbackUrl: 'https://example.com/cb',
       maxBudgetSats: 100,
-    };
+    });
+    const parsed = parseToolResult(result) as Record<string, unknown>;
+    expect(parsed.status).toBe('PENDING');
 
-    const resultPromise = handler(argsWithOptionals);
-    await jest.advanceTimersByTimeAsync(2000);
-    await resultPromise;
-
-    // Verify the request was built with optional fields
+    // The request was built with the optional fields wired through
     const authCall = (mocks.l402Service.authenticate as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
     expect(authCall.maxBudgetSats).toBe(100);
     expect(authCall.callbackUrl).toBe('https://example.com/cb');
@@ -321,29 +213,101 @@ describe('ask_human tool', () => {
     expect((authCall.taskData as Record<string, unknown>).choices).toEqual(['a', 'b']);
   });
 
-  it('falls back to amountSats when totalInvoiceSats is missing', async () => {
-    const creds = new L402Credentials('mac', 'pre', 'vid-123');
+  it('accepts MEDIA_VERIFICATION with images[] and wires them into the request body', async () => {
+    (mocks.client.getPricing as jest.Mock).mockResolvedValue({
+      taskTypes: [
+        {
+          id: 'MEDIA_VERIFICATION',
+          displayName: 'Media Verification',
+          description: 'Verify images, free-form answer',
+          basePriceSats: 80,
+          urgentPriceSats: 160,
+          tierPricing: {},
+        },
+      ],
+      urgentMultiplier: 2.0,
+    });
 
+    const creds = new L402Credentials('mac', 'pre', 'vid-media');
     (mocks.l402Service.authenticate as jest.Mock).mockResolvedValue(creds);
     (mocks.client.submitVerificationWithL402 as jest.Mock).mockResolvedValue({
-      verificationId: 'vid-123',
+      verificationId: 'vid-media',
       status: VerificationStatus.PAYMENT_RECEIVED,
       createdAt: '2026-01-01T00:00:00Z',
     });
 
-    (mocks.client.getVerification as jest.Mock).mockResolvedValue({
-      verificationId: 'vid-123',
-      status: VerificationStatus.COMPLETED,
-      result: { answer: 'no' },
-      createdAt: '2026-01-01T00:00:00Z',
-      amountSats: 30,
+    const images = ['https://example.com/a.jpg', 'https://example.com/b.png'];
+    const result = await handler({
+      question: 'What is in these images?',
+      taskType: 'MEDIA_VERIFICATION',
+      urgent: false,
+      maxWaitMinutes: 240,
+      images,
     });
-
-    const resultPromise = handler(BASE_ARGS);
-    await jest.advanceTimersByTimeAsync(2000);
-    const result = await resultPromise;
     const parsed = parseToolResult(result) as Record<string, unknown>;
 
-    expect(parsed.invoiceAmountSats).toBe(30);
+    expect(parsed.status).toBe('PENDING');
+    expect(parsed.verificationId).toBe('vid-media');
+    expect(parsed.taskType).toBe('MEDIA_VERIFICATION');
+
+    // Images flow into taskData, mirroring how choices are wired
+    const authCall = (mocks.l402Service.authenticate as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    expect(authCall.taskType).toBe('MEDIA_VERIFICATION');
+    expect((authCall.taskData as Record<string, unknown>).images).toEqual(images);
+  });
+
+  it('rejects MEDIA_VERIFICATION without images', async () => {
+    const result = await handler({
+      question: 'What is in the image?',
+      taskType: 'MEDIA_VERIFICATION',
+      urgent: false,
+      maxWaitMinutes: 240,
+    });
+    const parsed = parseToolResult(result) as Record<string, unknown>;
+
+    expect(parsed.error).toBe('VALIDATION_ERROR');
+    // Validation runs before any pricing/payment work
+    expect(mocks.client.getPricing).not.toHaveBeenCalled();
+    expect(mocks.l402Service.authenticate).not.toHaveBeenCalled();
+  });
+
+  it('rejects http:// image URLs (https only)', async () => {
+    const result = await handler({
+      question: 'What is in the image?',
+      taskType: 'MEDIA_VERIFICATION',
+      urgent: false,
+      maxWaitMinutes: 240,
+      images: ['http://example.com/insecure.jpg'],
+    });
+    const parsed = parseToolResult(result) as Record<string, unknown>;
+
+    expect(parsed.error).toBe('VALIDATION_ERROR');
+    expect(mocks.l402Service.authenticate).not.toHaveBeenCalled();
+  });
+
+  it('rejects images[] supplied for a non-MEDIA task type', async () => {
+    const result = await handler({
+      ...BASE_ARGS, // BINARY_DECISION
+      images: ['https://example.com/a.jpg'],
+    });
+    const parsed = parseToolResult(result) as Record<string, unknown>;
+
+    expect(parsed.error).toBe('VALIDATION_ERROR');
+    expect(mocks.l402Service.authenticate).not.toHaveBeenCalled();
+  });
+
+  it('rejects choices[] supplied together with MEDIA_VERIFICATION', async () => {
+    const result = await handler({
+      question: 'What is in the image?',
+      taskType: 'MEDIA_VERIFICATION',
+      urgent: false,
+      maxWaitMinutes: 240,
+      images: ['https://example.com/a.jpg'],
+      choices: ['cat', 'dog'],
+    });
+    const parsed = parseToolResult(result) as Record<string, unknown>;
+
+    expect(parsed.error).toBe('VALIDATION_ERROR');
+    expect(mocks.l402Service.authenticate).not.toHaveBeenCalled();
   });
 });

@@ -85,6 +85,30 @@ describe('get_pricing tool', () => {
     expect(pricing[0].id).toBe('MULTIPLE_CHOICE');
   });
 
+  it('accepts MEDIA_VERIFICATION as a filter value', async () => {
+    client.getPricing.mockResolvedValue({
+      taskTypes: [
+        ...SAMPLE_PRICING.taskTypes,
+        {
+          id: 'MEDIA_VERIFICATION',
+          displayName: 'Media Verification',
+          description: 'Verify images, free-form answer',
+          basePriceSats: 80,
+          urgentPriceSats: 160,
+          tierPricing: {},
+        },
+      ],
+      urgentMultiplier: 2.0,
+    });
+
+    const result = await handler({ taskType: 'MEDIA_VERIFICATION' });
+    const parsed = parseToolResult(result) as Record<string, unknown>;
+
+    const pricing = parsed.pricing as Array<{ id: string }>;
+    expect(pricing).toHaveLength(1);
+    expect(pricing[0].id).toBe('MEDIA_VERIFICATION');
+  });
+
   it('returns empty array when taskType does not match', async () => {
     client.getPricing.mockResolvedValue(SAMPLE_PRICING);
 

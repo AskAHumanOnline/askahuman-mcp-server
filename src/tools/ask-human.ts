@@ -11,6 +11,40 @@ import type { AskAHumanClient } from "../services/askahuman-client.js";
 import type { CredentialStore } from "../services/credential-store.js";
 import { type CreateVerificationRequest, type TaskType } from "../types.js";
 
+/**
+ * Raw Zod shape registered with the MCP SDK (drives the tool's JSON schema).
+ * Cross-field rules that depend on taskType are enforced by `askHumanSchema` below.
+ */
+const askHumanShape = {
+  question: z.string().min(1).max(2000).describe("The question or task for the human verifier"),
+  taskType: z.enum(["BINARY_DECISION", "MULTIPLE_CHOICE", "TEXT_RESPONSE", "MEDIA_VERIFICATION"]).describe("Type of verification task. MEDIA_VERIFICATION verifies the supplied images[] and returns a free-form text answer."),
+  context: z.string().max(4000).optional().describe("Additional context to help the verifier"),
+  choices: z.array(z.string().max(500)).max(20).optional().describe("Answer options for MULTIPLE_CHOICE tasks"),
+  images: z.array(z.string().url().refine((u) => u.startsWith("https://"), { message: "Image URLs must use https" })).min(1).max(8).optional().describe("HTTPS image URLs to verify (required for MEDIA_VERIFICATION). Each must be a public https URL."),
+  callbackUrl: z.string().url().optional().describe("Webhook URL for async result delivery"),
+  urgent: z.boolean().optional().default(false).describe("Pay priority rate for faster handling"),
+  maxBudgetSats: z.number().int().positive().optional().describe("Maximum sats willing to pay. The server enforces a minimum price per task type; if maxBudgetSats is below the minimum the call is rejected. If maxBudgetSats is above the minimum, your offered amount becomes the actual invoice — you will be charged the full maxBudgetSats, not just the server minimum."),
+  maxWaitMinutes: z.number().int().min(30).max(1440).optional().default(240).describe("Max minutes before task expires in queue"),
+};
+
+/**
+ * Full schema including cross-field rules. Re-validated inside the handler so the
+ * constraints hold even when args bypass the SDK's schema-level parsing.
+ */
+const askHumanSchema = z.object(askHumanShape)
+  .refine(
+    (a) => a.taskType !== "MEDIA_VERIFICATION" || (a.images !== undefined && a.images.length > 0),
+    { message: "MEDIA_VERIFICATION requires at least one image URL in images[]", path: ["images"] },
+  )
+  .refine(
+    (a) => a.taskType !== "MEDIA_VERIFICATION" || a.choices === undefined,
+    { message: "choices must not be set for MEDIA_VERIFICATION", path: ["choices"] },
+  )
+  .refine(
+    (a) => a.taskType === "MEDIA_VERIFICATION" || a.images === undefined,
+    { message: "images may only be set for MEDIA_VERIFICATION tasks", path: ["images"] },
+  );
+
 export function registerAskHuman(
   server: McpServer,
   config: Config,
@@ -20,18 +54,21 @@ export function registerAskHuman(
 ): void {
   server.tool(
     "ask_human",
-    "Submit a question for human verification and pay via Lightning Network. Returns immediately with a verificationId after payment succeeds. You must then poll check_verification with the returned verificationId to retrieve the human's answer.",
-    {
-      question: z.string().min(1).max(2000).describe("The question or task for the human verifier"),
-      taskType: z.enum(["BINARY_DECISION", "MULTIPLE_CHOICE", "TEXT_RESPONSE"]).describe("Type of verification task"),
-      context: z.string().max(4000).optional().describe("Additional context to help the verifier"),
-      choices: z.array(z.string().max(500)).max(20).optional().describe("Answer options for MULTIPLE_CHOICE tasks"),
-      callbackUrl: z.string().url().optional().describe("Webhook URL for async result delivery"),
-      urgent: z.boolean().optional().default(false).describe("Pay priority rate for faster handling"),
-      maxBudgetSats: z.number().int().positive().optional().describe("Maximum sats willing to pay. The server enforces a minimum price per task type; if maxBudgetSats is below the minimum the call is rejected. If maxBudgetSats is above the minimum, your offered amount becomes the actual invoice — you will be charged the full maxBudgetSats, not just the server minimum."),
-      maxWaitMinutes: z.number().int().min(30).max(1440).optional().default(240).describe("Max minutes before task expires in queue"),
-    },
-    async (args) => {
+    "Submit a question for human verification and pay via Lightning Network. Returns immediately with a verificationId after payment succeeds. You must then poll check_verification with the returned verificationId to retrieve the human's answer. For MEDIA_VERIFICATION, supply one or more https image URLs in images[]; the human returns a free-form text answer about the images.",
+    askHumanShape,
+    async (rawArgs) => {
+      // Re-validate including cross-field rules (taskType <-> images/choices, https-only URLs).
+      const validation = askHumanSchema.safeParse(rawArgs);
+      if (!validation.success) {
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({
+            error: "VALIDATION_ERROR",
+            message: validation.error.issues[0]?.message ?? "Invalid arguments",
+          }) }],
+        };
+      }
+      const args = validation.data;
+
       // Pre-fetch server pricing to determine amountSats (required by backend)
       let amountSats: number;
       try {
@@ -74,6 +111,7 @@ export function registerAskHuman(
           question: args.question,
           ...(args.context && { context: args.context }),
           ...(args.choices && { choices: args.choices }),
+          ...(args.images && { images: args.images }),
         },
         amountSats,
         ...(args.maxBudgetSats !== undefined && { maxBudgetSats: args.maxBudgetSats }),

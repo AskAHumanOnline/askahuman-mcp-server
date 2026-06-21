@@ -14,7 +14,7 @@ export function registerGetPricing(
     "get_pricing",
     "Check current server-side pricing for human verification tasks. Prices are set by the server and may change.",
     {
-      taskType: z.enum(["BINARY_DECISION", "MULTIPLE_CHOICE", "TEXT_RESPONSE"]).optional().describe("Filter to a specific task type (optional)"),
+      taskType: z.enum(["BINARY_DECISION", "MULTIPLE_CHOICE", "TEXT_RESPONSE", "MEDIA_VERIFICATION"]).optional().describe("Filter to a specific task type (optional)"),
     },
     async (args) => {
       let pricing;

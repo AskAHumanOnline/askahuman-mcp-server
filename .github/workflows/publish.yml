@@ -19,6 +19,12 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
+      # Trusted Publishing (OIDC auth, no token) requires npm >= 11.5.1.
+      # Node 20 ships npm 10.x, which can sign provenance but cannot
+      # authenticate via OIDC -> npm publish returns E404 (not authorized).
+      - name: Upgrade npm for Trusted Publishing
+        run: npm install -g npm@latest
+
       - name: Install dependencies
         run: npm ci
 

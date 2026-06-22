@@ -1,6 +1,6 @@
 # askahuman-mcp
 
-An MCP (Model Context Protocol) server that gives AI agents access to human verification. Ask a human a question, pay via the Lightning Network, and get a verified answer -- all as a single tool call.
+An MCP (Model Context Protocol) server that gives AI agents access to human verification. Ask a human a question, pay via the Lightning Network, and get a verified answer -- all through standard MCP tools.
 
 Any MCP-compatible AI agent (Claude, Gemini, Codex, etc.) can use this server to request human judgment on tasks that require real-world understanding, common sense, or subjective evaluation.
 
@@ -49,8 +49,8 @@ The server exposes five tools to AI agents:
 
 | Tool | Description | Key Inputs |
 |---|---|---|
-| `ask_human` | Submit a question, pay via Lightning, poll for result | `question`, `taskType`, `context?`, `maxBudgetSats?`, `maxWaitMinutes?` |
-| `check_verification` | Check the status of a pending verification | `verificationId` |
+| `ask_human` | Submit a question and pay via Lightning. Returns immediately with a `verificationId` (status `PENDING`) -- poll `check_verification` for the answer | `question`, `taskType`, `context?`, `choices?`, `images?`, `urgent?`, `callbackUrl?`, `maxBudgetSats?`, `maxWaitMinutes?` |
+| `check_verification` | Poll the status of a verification; returns `terminal` + `nextStep` so the agent knows when to stop | `verificationId` |
 | `cancel_verification` | Check refund eligibility (advisory, no state change) | `verificationId` |
 | `request_refund` | Claim a refund for an expired-unclaimed task | `verificationId` |
 | `get_pricing` | Query current server-side pricing | `taskType?` |
@@ -58,8 +58,9 @@ The server exposes five tools to AI agents:
 ### Task types
 
 - `BINARY_DECISION` -- Yes/No questions
-- `MULTIPLE_CHOICE` -- Choose from provided options
+- `MULTIPLE_CHOICE` -- Choose from provided options (supply `choices[]`)
 - `TEXT_RESPONSE` -- Free-form text answer
+- `MEDIA_VERIFICATION` -- Verify one or more images and get a free-form text answer (supply `images[]` as public **https** URLs, max 8; `choices[]` is not allowed for this type)
 
 ## Quick start
 
@@ -88,15 +89,48 @@ Restart Claude Desktop. The `ask_human` tool will be available in your conversat
 
 ### Example usage
 
-Once configured, Claude can use the tool like this:
+`ask_human` is **non-blocking**: it prices the task, pays the Lightning invoice, submits the request, and returns right away with a `verificationId` and `status: "PENDING"`. The agent then polls `check_verification` until the human responds. (The MCP request timeout is far shorter than a human's response time, so the tool never blocks waiting for an answer.)
+
+**Text / decision task** — the agent is prompted:
 
 > "Ask a human whether this email looks like a phishing attempt: [email content]"
 
-The MCP server will:
-1. Submit the question to the AskAHuman API
-2. Pay the Lightning invoice automatically
-3. Poll for the human verifier's response
-4. Return the answer to the agent
+1. `ask_human` returns immediately:
+   ```jsonc
+   { "status": "PENDING", "verificationId": "vid-123", "amountPaidSats": 50 }
+   ```
+2. The agent polls `check_verification({ "verificationId": "vid-123" })` every 30–60s:
+   - While `terminal: false` (`nextStep: "keep_polling"`) → keep polling.
+   - When `terminal: true` with status `COMPLETED` → the human's answer is in the `result` field.
+
+**Image task (`MEDIA_VERIFICATION`)** — verify images and get a free-form answer:
+
+```jsonc
+ask_human({
+  "taskType": "MEDIA_VERIFICATION",
+  "question": "Do both photos show the same person?",
+  "images": [
+    "https://example.com/a.jpg",
+    "https://example.com/b.jpg"
+  ],
+  "maxWaitMinutes": 240
+})
+// → { "status": "PENDING", "verificationId": "vid-456", "amountPaidSats": 80 }
+```
+
+Image URLs must be public **https** links (up to 8). Then poll `check_verification` exactly as above.
+
+**Multiple choice** — supply `choices[]`:
+
+```jsonc
+ask_human({
+  "taskType": "MULTIPLE_CHOICE",
+  "question": "Which category best fits this support ticket?",
+  "choices": ["Billing", "Bug report", "Feature request", "Spam"]
+})
+```
+
+If a task expires in the queue without being claimed, `check_verification` returns `nextStep: "call_request_refund"` — call `request_refund({ "verificationId": "..." })` to reclaim the sats.
 
 ## Development
 
@@ -146,10 +180,10 @@ The server implements the L402 payment protocol:
 1. **Submit** -- The agent sends a verification request to the AskAHuman API
 2. **Pay** -- The API returns a 402 with a Lightning invoice; the MCP server pays it via the agent's LND node
 3. **Authenticate** -- The payment preimage proves payment; the server retries with L402 credentials
-4. **Poll** -- The server polls for the human verifier's response with exponential backoff
-5. **Return** -- The verified answer is returned to the agent
+4. **Return** -- The request is queued for a human verifier and `ask_human` returns immediately with a `verificationId` (status `PENDING`)
+5. **Poll** -- The agent calls `check_verification` every 30–60s until it returns `terminal: true`; status `COMPLETED` carries the human's answer in `result`
 
-If a task expires without being claimed, the agent can call `request_refund` to reclaim the sats.
+If a task expires without being claimed, `check_verification` signals `nextStep: "call_request_refund"` and the agent can call `request_refund` to reclaim the sats.
 
 ## License
 

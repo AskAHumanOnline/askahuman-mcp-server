@@ -28,8 +28,5 @@ jobs:
       - name: Build
         run: npm run build
 
-      # NOTE: tests/tools/ask-human.test.ts is currently failing due to fake-timer
-      # advancement not draining microtasks after the pricing pre-fetch refactor.
-      # Tracked separately; remove the ignore pattern once the timing fix lands.
       - name: Test
-        run: npm test -- --testPathIgnorePatterns="tests/tools/ask-human.test.ts"
+        run: npm test

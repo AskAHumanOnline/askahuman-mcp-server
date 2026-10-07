@@ -133,7 +133,7 @@ export function registerAskHuman(
         };
       }
 
-      credentialStore.set(credentials.verificationId, credentials.getPreimage());
+      credentialStore.set(credentials.verificationId, credentials.getPreimage(), credentials.macaroon);
       const verificationId = credentials.verificationId;
 
       // Submit the authenticated request

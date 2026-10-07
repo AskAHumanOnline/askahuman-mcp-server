@@ -3,6 +3,7 @@
  */
 
 import { registerCheckVerification } from '../../src/tools/check-verification.js';
+import type { CredentialStore } from '../../src/services/credential-store.js';
 import type { AskAHumanClient } from '../../src/services/askahuman-client.js';
 import { AskAHumanError } from '../../src/services/askahuman-client.js';
 import { VerificationStatus } from '../../src/types.js';
@@ -12,19 +13,88 @@ function createMockClient(): jest.Mocked<Pick<AskAHumanClient, 'getVerification'
   return { getVerification: jest.fn() };
 }
 
-function setupTool(client: ReturnType<typeof createMockClient>): ToolHandler {
+const PROOF = { macaroon: 'secret-macaroon', preimage: 'secret-preimage' };
+
+function createMockStore(): jest.Mocked<Pick<CredentialStore, 'getProof'>> {
+  return { getProof: jest.fn().mockReturnValue(PROOF) };
+}
+
+function setupTool(
+  client: ReturnType<typeof createMockClient>,
+  store: ReturnType<typeof createMockStore>,
+): ToolHandler {
   const { server, getHandler } = createMockServer();
-  registerCheckVerification(server, client as unknown as AskAHumanClient);
+  registerCheckVerification(
+    server,
+    client as unknown as AskAHumanClient,
+    store as unknown as CredentialStore,
+  );
   return getHandler();
 }
 
 describe('check_verification tool', () => {
   let client: ReturnType<typeof createMockClient>;
+  let store: ReturnType<typeof createMockStore>;
   let handler: ToolHandler;
 
   beforeEach(() => {
     client = createMockClient();
-    handler = setupTool(client);
+    store = createMockStore();
+    handler = setupTool(client, store);
+  });
+
+  it('passes the stored proof to getVerification', async () => {
+    client.getVerification.mockResolvedValue({
+      verificationId: 'vid-123',
+      status: VerificationStatus.IN_QUEUE,
+      createdAt: '2026-01-01T00:00:00Z',
+    });
+
+    await handler({ verificationId: 'vid-123' });
+
+    expect(store.getProof).toHaveBeenCalledWith('vid-123');
+    expect(client.getVerification).toHaveBeenCalledWith('vid-123', PROOF);
+  });
+
+  it('returns CREDENTIAL_MISSING without calling the backend when no credential is stored', async () => {
+    store.getProof.mockReturnValue(undefined);
+
+    const result = await handler({ verificationId: 'vid-123' });
+    const parsed = parseToolResult(result) as Record<string, unknown>;
+
+    expect(parsed.error).toBe('CREDENTIAL_MISSING');
+    expect(parsed.terminal).toBe(true);
+    expect(parsed.nextStep).toBe('contact_support');
+    expect(client.getVerification).not.toHaveBeenCalled();
+  });
+
+  it('never includes the macaroon or preimage in the tool output', async () => {
+    client.getVerification.mockResolvedValue({
+      verificationId: 'vid-123',
+      status: VerificationStatus.COMPLETED,
+      createdAt: '2026-01-01T00:00:00Z',
+      result: { answer: 'yes', confidence: 0.9 },
+    });
+
+    const result = await handler({ verificationId: 'vid-123' });
+
+    expect(result.content[0].text).not.toContain('secret-macaroon');
+    expect(result.content[0].text).not.toContain('secret-preimage');
+  });
+
+  it('REFUND_PENDING is non-terminal with nextStep refund_in_progress', async () => {
+    client.getVerification.mockResolvedValue({
+      verificationId: 'vid-123',
+      status: VerificationStatus.REFUND_PENDING,
+      createdAt: '2026-01-01T00:00:00Z',
+    });
+
+    const result = await handler({ verificationId: 'vid-123' });
+    const parsed = parseToolResult(result) as Record<string, unknown>;
+
+    expect(parsed.status).toBe('REFUND_PENDING');
+    expect(parsed.terminal).toBe(false);
+    expect(parsed.nextStep).toBe('refund_in_progress');
   });
 
   it('maps all status fields including optional fields', async () => {

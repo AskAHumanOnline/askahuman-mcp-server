@@ -247,6 +247,30 @@ describe('AskAHumanClient', () => {
       expect(result.result?.answer).toBe('yes');
     });
 
+    it('sends the L402 Authorization header when a proof is given', async () => {
+      const spy = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+        mockResponse(200, { verificationId: 'vid', status: 'COMPLETED', createdAt: '2026-01-01T00:00:00Z' }),
+      );
+
+      await client.getVerification('vid', { macaroon: 'mac-b64', preimage: 'pre-hex' });
+
+      const [url, init] = spy.mock.calls[0];
+      expect(String(url)).toBe('https://api.example.com/api/verify/vid');
+      expect((init as RequestInit).headers).toEqual({ Authorization: 'L402 mac-b64:pre-hex' });
+    });
+
+    it('sends no Authorization header when no proof is given', async () => {
+      const spy = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+        mockResponse(200, { verificationId: 'vid', status: 'IN_QUEUE', createdAt: '2026-01-01T00:00:00Z' }),
+      );
+
+      await client.getVerification('vid');
+
+      const init = spy.mock.calls[0][1] as RequestInit | undefined;
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      expect(Object.keys(headers).map((h) => h.toLowerCase())).not.toContain('authorization');
+    });
+
     it('throws API_ERROR on non-2xx response', async () => {
       jest.spyOn(globalThis, 'fetch').mockResolvedValue(
         mockResponse(404, { error: 'not found' }),

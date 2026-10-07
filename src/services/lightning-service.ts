@@ -118,10 +118,15 @@ export class LightningService {
   async createInvoice(
     amountSats: number,
     memo?: string,
+    expirySeconds?: number,
   ): Promise<{ bolt11: string; rHash: string }> {
     const body: Record<string, unknown> = { value: String(amountSats) };
     if (memo) {
       body.memo = memo;
+    }
+    if (expirySeconds !== undefined) {
+      // LND's default is 1 hour; callers that must stay payable for longer pass it explicitly.
+      body.expiry = String(expirySeconds);
     }
 
     const response = await this.lndRequest<LndAddInvoiceResponse>(

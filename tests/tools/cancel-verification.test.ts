@@ -167,4 +167,18 @@ describe('cancel_verification tool', () => {
     expect(parsed.error).toBe('LOOKUP_FAILED');
     expect(parsed.message).toContain('string error');
   });
+
+  it('REFUND_PENDING -> nextStep: refund_in_progress', async () => {
+    client.getVerification.mockResolvedValue({
+      verificationId: 'vid-123',
+      status: VerificationStatus.REFUND_PENDING,
+      createdAt: '2026-01-01T00:00:00Z',
+    });
+
+    const result = await handler({ verificationId: 'vid-123' });
+    const parsed = parseToolResult(result) as Record<string, unknown>;
+
+    expect(parsed.nextStep).toBe('refund_in_progress');
+    expect(parsed.status).toBe('REFUND_PENDING');
+  });
 });

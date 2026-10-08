@@ -215,6 +215,38 @@ describe('LightningService', () => {
     });
   });
 
+  describe('createInvoice expiry', () => {
+    async function invoiceBody(call: (service: LightningService) => Promise<unknown>): Promise<Record<string, unknown>> {
+      let receivedBody = '';
+      serverPort = await startMockServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (chunk: Buffer) => chunks.push(chunk));
+        req.on('end', () => {
+          receivedBody = Buffer.concat(chunks).toString();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            payment_request: 'lnbc100n1...',
+            r_hash: Buffer.alloc(32).toString('base64'),
+            add_index: '1',
+          }));
+        });
+      });
+      await call(new LightningService(createTestConfig(serverPort)));
+      return JSON.parse(receivedBody) as Record<string, unknown>;
+    }
+
+    it('sends expiry as a string when given', async () => {
+      const body = await invoiceBody((s) => s.createInvoice(100, 'memo', 691200));
+      expect(body.expiry).toBe('691200');
+      expect(body.value).toBe('100');
+    });
+
+    it('omits expiry when not given', async () => {
+      const body = await invoiceBody((s) => s.createInvoice(100, 'memo'));
+      expect(body).not.toHaveProperty('expiry');
+    });
+  });
+
   describe('constructor', () => {
     it('warns about plaintext http:// LND URL', () => {
       const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});

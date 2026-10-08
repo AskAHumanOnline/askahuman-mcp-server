@@ -44,7 +44,7 @@ async function main(): Promise<void> {
   });
 
   registerAskHuman(server, config, l402Service, askahumanClient, credentialStore);
-  registerCheckVerification(server, askahumanClient);
+  registerCheckVerification(server, askahumanClient, credentialStore);
   registerCancelVerification(server, askahumanClient);
   registerRequestRefund(server, askahumanClient, lightningService, credentialStore);
   registerGetPricing(server, askahumanClient);

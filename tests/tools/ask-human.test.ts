@@ -106,8 +106,8 @@ describe('ask_human tool', () => {
     expect(parsed.taskType).toBe('BINARY_DECISION');
     expect(parsed.amountPaidSats).toBe(50);
 
-    // Credential (preimage) cached for later check_verification / refund
-    expect(mocks.credentialStore.set).toHaveBeenCalledWith('vid-123', 'preimage-hex');
+    // Credential (preimage + macaroon) cached for later check_verification / refund
+    expect(mocks.credentialStore.set).toHaveBeenCalledWith('vid-123', 'preimage-hex', 'mac');
   });
 
   it('returns UNKNOWN_TASK_TYPE when the server does not price the task type', async () => {

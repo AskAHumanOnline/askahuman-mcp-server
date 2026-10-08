@@ -23,6 +23,9 @@ function createMocks() {
 
   const credentialStore = {
     get: jest.fn(),
+    getProof: jest.fn().mockReturnValue({ macaroon: 'mac', preimage: 'pre' }),
+    getRefundInvoice: jest.fn().mockReturnValue(undefined),
+    setRefundInvoice: jest.fn(),
     delete: jest.fn(),
   } as unknown as jest.Mocked<CredentialStore>;
 
@@ -49,7 +52,7 @@ describe('request_refund tool', () => {
     handler = setupTool(mocks);
   });
 
-  it('happy path: confirms EXPIRED_UNCLAIMED, creates invoice, submits refund, deletes credential', async () => {
+  it('happy path: confirms EXPIRED_UNCLAIMED, creates invoice, submits refund, keeps credential', async () => {
     (mocks.client.getVerification as jest.Mock).mockResolvedValue({
       verificationId: 'vid-123',
       status: VerificationStatus.EXPIRED_UNCLAIMED,
@@ -81,8 +84,8 @@ describe('request_refund tool', () => {
       'stored-preimage-hex',
     );
 
-    // Verify credential was deleted after success
-    expect(mocks.credentialStore.delete).toHaveBeenCalledWith('vid-123');
+    // Credential is kept until TTL so check_verification can still reach REFUNDED
+    expect(mocks.credentialStore.delete).not.toHaveBeenCalled();
   });
 
   it('returns NOT_ELIGIBLE if status is not EXPIRED_UNCLAIMED', async () => {
@@ -356,5 +359,175 @@ describe('request_refund tool', () => {
 
     expect(parsed.status).toBe('REFUND_FAILED');
     expect(parsed.failureReason).toContain('network error');
+  });
+
+  describe('refund invoice lifecycle', () => {
+    const EXPIRED = {
+      verificationId: 'vid-123',
+      status: VerificationStatus.EXPIRED_UNCLAIMED,
+      createdAt: '2026-01-01T00:00:00Z',
+      refundEligible: true,
+      totalInvoiceSats: 50,
+    };
+
+    /** Back the mocked store's invoice accessors with real state so retries behave like production. */
+    function statefulInvoiceStore(): void {
+      let stored: string | undefined;
+      (mocks.credentialStore.getRefundInvoice as jest.Mock).mockImplementation(() => stored);
+      (mocks.credentialStore.setRefundInvoice as jest.Mock).mockImplementation((_id: string, b: string) => {
+        stored = b;
+      });
+    }
+
+    beforeEach(() => {
+      (mocks.client.getVerification as jest.Mock).mockResolvedValue(EXPIRED);
+      (mocks.credentialStore.get as jest.Mock).mockReturnValue('stored-preimage');
+    });
+
+    it('first attempt creates the invoice with an 8-day expiry and stores it', async () => {
+      (mocks.lightning.createInvoice as jest.Mock).mockResolvedValue({ bolt11: 'lnbc50n1first', rHash: 'h' });
+      (mocks.client.requestRefund as jest.Mock).mockResolvedValue({ refunded: true });
+
+      await handler({ verificationId: 'vid-123' });
+
+      expect(mocks.lightning.createInvoice).toHaveBeenCalledWith(50, 'AskAHuman refund', 691200);
+      expect(mocks.credentialStore.setRefundInvoice).toHaveBeenCalledWith('vid-123', 'lnbc50n1first');
+      expect(mocks.client.requestRefund).toHaveBeenCalledWith('vid-123', 'lnbc50n1first', 'stored-preimage');
+    });
+
+    it('passes the stored proof when checking status', async () => {
+      (mocks.lightning.createInvoice as jest.Mock).mockResolvedValue({ bolt11: 'lnbc50n1first', rHash: 'h' });
+      (mocks.client.requestRefund as jest.Mock).mockResolvedValue({ refunded: true });
+
+      await handler({ verificationId: 'vid-123' });
+
+      expect(mocks.client.getVerification).toHaveBeenCalledWith('vid-123', { macaroon: 'mac', preimage: 'pre' });
+    });
+
+    it('retry after a 5xx reuses the identical invoice and does not call createInvoice again', async () => {
+      statefulInvoiceStore();
+      (mocks.lightning.createInvoice as jest.Mock).mockResolvedValue({ bolt11: 'lnbc50n1first', rHash: 'h' });
+      (mocks.client.requestRefund as jest.Mock)
+        .mockRejectedValueOnce(new AskAHumanError('server error', 'API_ERROR', 503))
+        .mockResolvedValueOnce({ refunded: true });
+
+      const first = parseToolResult(await handler({ verificationId: 'vid-123' })) as Record<string, unknown>;
+      expect(first.status).toBe('REFUND_FAILED');
+      // Invoice survives the failed attempt; credential is not deleted
+      expect(mocks.credentialStore.delete).not.toHaveBeenCalled();
+      expect(mocks.credentialStore.getRefundInvoice('vid-123')).toBe('lnbc50n1first');
+
+      const second = parseToolResult(await handler({ verificationId: 'vid-123' })) as Record<string, unknown>;
+      expect(second.status).toBe('REFUNDED');
+
+      expect(mocks.lightning.createInvoice).toHaveBeenCalledTimes(1);
+      const calls = (mocks.client.requestRefund as jest.Mock).mock.calls;
+      expect(calls).toHaveLength(2);
+      expect(calls[0][1]).toBe('lnbc50n1first');
+      expect(calls[1][1]).toBe('lnbc50n1first');
+      expect(mocks.credentialStore.delete).not.toHaveBeenCalled();
+    });
+
+    it('does not store an invoice when createInvoice fails', async () => {
+      (mocks.lightning.createInvoice as jest.Mock).mockRejectedValue(new Error('lnd down'));
+
+      await handler({ verificationId: 'vid-123' });
+
+      expect(mocks.credentialStore.setRefundInvoice).not.toHaveBeenCalled();
+      expect(mocks.client.requestRefund).not.toHaveBeenCalled();
+    });
+
+    it('maps 409 REFUND_INVOICE_MISMATCH body to its own failure reason', async () => {
+      (mocks.lightning.createInvoice as jest.Mock).mockResolvedValue({ bolt11: 'lnbc50n1first', rHash: 'h' });
+      (mocks.client.requestRefund as jest.Mock).mockRejectedValue(
+        new AskAHumanError('conflict', 'API_ERROR', 409, JSON.stringify({ error: 'REFUND_INVOICE_MISMATCH' })),
+      );
+
+      const parsed = parseToolResult(await handler({ verificationId: 'vid-123' })) as Record<string, unknown>;
+
+      expect(parsed.status).toBe('REFUND_FAILED');
+      expect(parsed.failureReason).toMatch(/^REFUND_INVOICE_MISMATCH:/);
+    });
+
+    it.each([
+      ['plain 409 without a body', 409, undefined],
+      ['409 with a non-JSON body', 409, 'not json'],
+      ['409 with a different error code', 409, JSON.stringify({ error: 'ALREADY_REFUNDED' })],
+      ['400 carrying the mismatch code', 400, JSON.stringify({ error: 'REFUND_INVOICE_MISMATCH' })],
+    ])('maps %s to NOT_ELIGIBLE', async (_label, status, body) => {
+      (mocks.lightning.createInvoice as jest.Mock).mockResolvedValue({ bolt11: 'lnbc50n1first', rHash: 'h' });
+      (mocks.client.requestRefund as jest.Mock).mockRejectedValue(
+        new AskAHumanError('conflict', 'API_ERROR', status, body),
+      );
+
+      const parsed = parseToolResult(await handler({ verificationId: 'vid-123' })) as Record<string, unknown>;
+
+      expect(parsed.failureReason).toMatch(/^NOT_ELIGIBLE:/);
+    });
+
+    it('REFUND_PENDING returns REFUND_IN_PROGRESS without creating an invoice or refunding', async () => {
+      (mocks.client.getVerification as jest.Mock).mockResolvedValue({
+        ...EXPIRED,
+        status: VerificationStatus.REFUND_PENDING,
+      });
+
+      const parsed = parseToolResult(await handler({ verificationId: 'vid-123' })) as Record<string, unknown>;
+
+      expect(parsed.status).toBe('REFUND_FAILED');
+      expect(parsed.failureReason).toMatch(/^REFUND_IN_PROGRESS:/);
+      expect(mocks.lightning.createInvoice).not.toHaveBeenCalled();
+      expect(mocks.client.requestRefund).not.toHaveBeenCalled();
+    });
+
+    it('rejects an overlapping call for the same verification without touching client or lightning', async () => {
+      let releaseRefund!: (v: { refunded: boolean }) => void;
+      (mocks.lightning.createInvoice as jest.Mock).mockResolvedValue({ bolt11: 'lnbc50n1first', rHash: 'h' });
+      (mocks.client.requestRefund as jest.Mock).mockReturnValue(
+        new Promise((resolve) => { releaseRefund = resolve; }),
+      );
+
+      const firstCall = handler({ verificationId: 'vid-123' });
+      // Let the first call advance until it is blocked on requestRefund
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(mocks.client.requestRefund).toHaveBeenCalledTimes(1);
+
+      const second = parseToolResult(await handler({ verificationId: 'vid-123' })) as Record<string, unknown>;
+      expect(second.status).toBe('REFUND_FAILED');
+      expect(second.failureReason).toMatch(/^REFUND_IN_PROGRESS:/);
+      expect(mocks.client.getVerification).toHaveBeenCalledTimes(1);
+      expect(mocks.lightning.createInvoice).toHaveBeenCalledTimes(1);
+      expect(mocks.client.requestRefund).toHaveBeenCalledTimes(1);
+
+      releaseRefund({ refunded: true });
+      const first = parseToolResult(await firstCall) as Record<string, unknown>;
+      expect(first.status).toBe('REFUNDED');
+    });
+
+    it('releases the lock after a call finishes so a later call proceeds', async () => {
+      (mocks.lightning.createInvoice as jest.Mock).mockResolvedValue({ bolt11: 'lnbc50n1first', rHash: 'h' });
+      (mocks.client.requestRefund as jest.Mock).mockRejectedValueOnce(new Error('boom'));
+      (mocks.client.requestRefund as jest.Mock).mockResolvedValueOnce({ refunded: true });
+
+      await handler({ verificationId: 'vid-123' });
+      const parsed = parseToolResult(await handler({ verificationId: 'vid-123' })) as Record<string, unknown>;
+
+      expect(parsed.status).toBe('REFUNDED');
+    });
+
+    it('does not block overlapping calls for different verifications', async () => {
+      let release!: (v: { refunded: boolean }) => void;
+      (mocks.lightning.createInvoice as jest.Mock).mockResolvedValue({ bolt11: 'lnbc50n1first', rHash: 'h' });
+      (mocks.client.requestRefund as jest.Mock)
+        .mockReturnValueOnce(new Promise((resolve) => { release = resolve; }))
+        .mockResolvedValueOnce({ refunded: true });
+
+      const a = handler({ verificationId: 'vid-a' });
+      await new Promise((resolve) => setImmediate(resolve));
+      const b = parseToolResult(await handler({ verificationId: 'vid-b' })) as Record<string, unknown>;
+      expect(b.status).toBe('REFUNDED');
+
+      release({ refunded: true });
+      await a;
+    });
   });
 });

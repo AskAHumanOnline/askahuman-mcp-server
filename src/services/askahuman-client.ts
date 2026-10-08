@@ -4,6 +4,7 @@
  */
 
 import type { Config } from '../config.js';
+import type { L402Proof } from './credential-store.js';
 import type {
   CreateVerificationRequest,
   PaymentChallenge,
@@ -93,9 +94,16 @@ export class AskAHumanClient {
 
   /**
    * Get the status and result of a verification request.
+   *
+   * The result (and the task data) is only returned to the owner, i.e. when the caller
+   * proves payment with `Authorization: L402 <macaroon>:<preimage>`. Without a proof the
+   * response carries the public status fields only.
    */
-  async getVerification(id: string): Promise<VerificationResponse> {
-    const response = await this.fetch(`/api/verify/${encodeURIComponent(id)}`);
+  async getVerification(id: string, proof?: L402Proof): Promise<VerificationResponse> {
+    const response = await this.fetch(
+      `/api/verify/${encodeURIComponent(id)}`,
+      proof ? { headers: { Authorization: `L402 ${proof.macaroon}:${proof.preimage}` } } : undefined,
+    );
 
     if (!response.ok) {
       const body = await this.safeReadBody(response);

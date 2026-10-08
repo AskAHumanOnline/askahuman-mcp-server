@@ -54,6 +54,10 @@ export function registerCancelVerification(
           nextStep = "already_completed";
           message = "Task was completed and a result is available. No refund is applicable.";
           break;
+        case VerificationStatus.REFUND_PENDING:
+          nextStep = "refund_in_progress";
+          message = "A refund payment is in flight. Do not start another one; call check_verification until the status is REFUNDED or EXPIRED_UNCLAIMED.";
+          break;
         case VerificationStatus.REFUNDED:
           nextStep = "already_refunded";
           message = "Task was already refunded.";

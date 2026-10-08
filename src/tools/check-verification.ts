@@ -11,6 +11,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { AskAHumanClient } from "../services/askahuman-client.js";
+import type { CredentialStore } from "../services/credential-store.js";
 import { VerificationStatus } from "../types.js";
 
 /** Guidance derived from a verification status: whether to keep polling and what to do next. */
@@ -37,6 +38,12 @@ function guidanceFor(status: VerificationStatus | string): StatusGuidance {
         terminal: true,
         nextStep: "call_request_refund",
         message: "Task expired without being claimed by a verifier. Stop polling and call request_refund with this verificationId to reclaim your sats.",
+      };
+    case VerificationStatus.REFUND_PENDING:
+      return {
+        terminal: false,
+        nextStep: "refund_in_progress",
+        message: "A refund payment is in flight. Do not start a new one. Call check_verification again in 30-60 seconds: REFUNDED means you were paid; EXPIRED_UNCLAIMED means the attempt failed, so call request_refund again (it reuses the same refund invoice).",
       };
     case VerificationStatus.REFUNDED:
       return {
@@ -70,6 +77,7 @@ function guidanceFor(status: VerificationStatus | string): StatusGuidance {
 export function registerCheckVerification(
   server: McpServer,
   client: AskAHumanClient,
+  credentialStore: CredentialStore,
 ): void {
   server.tool(
     "check_verification",
@@ -78,9 +86,22 @@ export function registerCheckVerification(
       verificationId: z.string().uuid().describe("The verification request ID to check"),
     },
     async (args) => {
+      // The result is owner-only: reading it requires the L402 credential stored when ask_human paid.
+      const proof = credentialStore.getProof(args.verificationId);
+      if (!proof) {
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({
+            error: "CREDENTIAL_MISSING",
+            terminal: true,
+            nextStep: "contact_support",
+            message: "No payment credential is stored for this verificationId, so the result cannot be read. This happens if the verification was created by another process or the server was restarted since the payment. Contact support with your verificationId.",
+          }) }],
+        };
+      }
+
       let v;
       try {
-        v = await client.getVerification(args.verificationId);
+        v = await client.getVerification(args.verificationId, proof);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return {
